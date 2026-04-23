@@ -1,0 +1,16 @@
+venv/
+.venv/
+
+__pycache__/
+*.py[cod]
+
+.pytest_cache/
+.mypy_cache/
+
+checkpoint/
+data/h3wb_train.npz
+data/h3wb_test.npz
+3d_keypoints.pt
+
+lib/nms/build/
+lib/nms/*.so
