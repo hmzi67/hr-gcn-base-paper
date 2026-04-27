@@ -14,3 +14,4 @@ data/h3wb_test.npz
 
 lib/nms/build/
 lib/nms/*.so
+/data
