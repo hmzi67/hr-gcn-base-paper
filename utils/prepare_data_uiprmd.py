@@ -49,9 +49,10 @@ VICON_TO_COCO_BODY = {
     # Hips (ASIS — anterior superior iliac spine)
     23: 11,  # LASI → left hip
     24: 12,  # RASI → right hip
-    # Knees
-    27: 13,  # LKNE → left knee
-    33: 14,  # RKNE → right knee
+    # Knees — indices 27/33 are thigh wands (LTHI/RTHI) at Z≈715mm;
+    # true lateral knee epicondyle markers are at 28/34 (Z≈507mm).
+    28: 13,  # LKNE → left knee
+    34: 14,  # RKNE → right knee
     # Ankles
     29: 15,  # LANK → left ankle
     35: 16,  # RANK → right ankle
@@ -69,8 +70,10 @@ TRAIN_SUBJECTS = list(range(1, 9))   # s01-s08
 TEST_SUBJECTS  = [9, 10]             # s09-s10
 
 # ROM angle output order (must match JOINT_LIMIT_TENSOR_ORDER in anatomical_constraints.py)
+# cervical_yaw and cervical_roll removed: UI-PRMD has no cervical rotation/roll ground truth
+# (single-frame geometry cannot recover axial rotation without a reference orientation).
 ROM_NAMES = [
-    'cervical_yaw', 'cervical_pitch', 'cervical_roll',
+    'cervical_pitch',
     'trunk_flex',
     'left_hip', 'right_hip',
     'left_knee', 'right_knee',
@@ -98,24 +101,37 @@ def _angle_at_vertex(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 
 def compute_rom_angles(pos: np.ndarray) -> np.ndarray:
     """
-    Compute 8 clinical ROM angles per frame from Vicon 3D positions.
+    Compute 6 clinical ROM angles per frame from Vicon 3D positions.
 
     pos: (T, 39, 3)  — Vicon joint positions in any consistent unit
-    returns: (T, 8)  — angles in degrees, order matches ROM_NAMES
+    returns: (T, 6)  — angles in degrees, order matches ROM_NAMES:
+        [cervical_pitch, trunk_flex, left_hip, right_hip, left_knee, right_knee]
+
+    Hip flexion: angle between global vertical (Vicon +Z) and the hip-to-knee
+    vector. Equivalent to "thigh deviation from upright" — symmetric by definition
+    across left and right sides for a standing subject. Using the measured spine
+    direction as reference instead introduced a systematic 20–30° L/R asymmetry
+    because the spine vector tilts toward one lateral side in this lab's coordinate
+    system.
+
+    Knee flexion: standard 3-point angle at the knee between femur and tibia.
+    Knee markers: indices 28 (LKNE) and 34 (RKNE) — the lateral knee epicondyle
+    markers at Z≈507mm. Indices 27/33 are thigh wands (LTHI/RTHI) at Z≈715mm
+    and must NOT be used here.
     """
     T = pos.shape[0]
-    angles = np.zeros((T, 8), dtype=np.float32)
+    angles = np.zeros((T, 6), dtype=np.float32)
 
     # Anatomical landmarks
     lasi  = pos[:, 23]   # left  hip ASIS
     rasi  = pos[:, 24]   # right hip ASIS
     lpsi  = pos[:, 25]   # left  hip PSIS
     rpsi  = pos[:, 26]   # right hip PSIS
-    lkne  = pos[:, 27]   # left  knee
-    rkne  = pos[:, 33]   # right knee
+    lkne  = pos[:, 28]   # left  knee (LKNE, lateral epicondyle, Z≈507mm)
+    rkne  = pos[:, 34]   # right knee (RKNE, lateral epicondyle, Z≈507mm)
     lank  = pos[:, 29]   # left  ankle
     rank  = pos[:, 35]   # right ankle
-    lsho  = pos[:,  8]   # left  shoulder
+    lsho  = pos[:,  8]   # left  shoulder (used for trunk flex only)
     rsho  = pos[:, 15]   # right shoulder
     head  = pos[:,  0]   # head proxy (LFHD)
     c7    = pos[:,  4]   # C7 (cervical vertebra 7)
@@ -126,35 +142,29 @@ def compute_rom_angles(pos: np.ndarray) -> np.ndarray:
     mid_hip   = (l_hip_ctr + r_hip_ctr) / 2.0
     mid_sho   = (lsho + rsho) / 2.0
 
-    up = np.array([0.0, 0.0, 1.0])   # vertical (Z-up in Vicon)
+    up = np.array([0.0, 0.0, 1.0])   # global vertical (Z-up in Vicon)
 
     for t in range(T):
-        # --- Trunk flexion: angle between spine vector and vertical ---
         spine = mid_sho[t] - mid_hip[t]
-        angles[t, 3] = _angle_between(spine, up)
-
-        # --- Hip flexion: angle at hip between spine-down and femur ---
-        # Use mid-hip → shoulder as "pelvis up" reference
-        pelvis_up = mid_sho[t] - mid_hip[t]
-        angles[t, 4] = _angle_at_vertex(mid_hip[t] + pelvis_up,
-                                         l_hip_ctr[t],
-                                         lkne[t])
-        angles[t, 5] = _angle_at_vertex(mid_hip[t] + pelvis_up,
-                                         r_hip_ctr[t],
-                                         rkne[t])
-
-        # --- Knee flexion: angle at knee between femur and tibia ---
-        angles[t, 6] = _angle_at_vertex(l_hip_ctr[t], lkne[t], lank[t])
-        angles[t, 7] = _angle_at_vertex(r_hip_ctr[t], rkne[t], rank[t])
 
         # --- Cervical pitch: angle between head-neck vector and vertical ---
         neck_to_head = head[t] - c7[t]
-        angles[t, 1] = _angle_between(neck_to_head, up)
+        angles[t, 0] = _angle_between(neck_to_head, up)
 
-        # Yaw and roll: cannot be reliably recovered from single-frame geometry
-        # without a reference orientation; set to 0 (geometric limitation)
-        angles[t, 0] = 0.0   # cervical yaw
-        angles[t, 2] = 0.0   # cervical roll
+        # --- Trunk flexion: angle between spine vector and vertical ---
+        angles[t, 1] = _angle_between(spine, up)
+
+        # --- Hip flexion (clinical convention: 0° = upright, increases with flexion) ---
+        # _angle_between(up, femur) gives ~180° for upright (femur antiparallel to up).
+        # Clinical hip flexion = 180° minus that value → 0° upright, ~90° thigh horizontal.
+        angles[t, 2] = 180.0 - _angle_between(up, lkne[t] - l_hip_ctr[t])
+        angles[t, 3] = 180.0 - _angle_between(up, rkne[t] - r_hip_ctr[t])
+
+        # --- Knee flexion (clinical convention: 0° = straight, increases with bend) ---
+        # _angle_at_vertex gives ~180° for a straight leg.
+        # Clinical knee flexion = 180° minus that value.
+        angles[t, 4] = 180.0 - _angle_at_vertex(l_hip_ctr[t], lkne[t], lank[t])
+        angles[t, 5] = 180.0 - _angle_at_vertex(r_hip_ctr[t], rkne[t], rank[t])
 
     return angles
 
@@ -229,7 +239,7 @@ def load_vicon_file(pos_path: str):
     Returns:
         poses_133_3d: (T, 133, 3) in mm — COCO 133-joint format, body only
         poses_133_2d: (T, 133, 2) — orthographic 2D, un-normalized
-        rom_angles:   (T, 8)     — geometric ROM degrees
+        rom_angles:   (T, 6)     — geometric ROM degrees
     """
     raw = np.loadtxt(pos_path)            # (T, 117)
     T = raw.shape[0]
@@ -245,7 +255,7 @@ def load_vicon_file(pos_path: str):
     poses_2d[:, :, :] = orthographic_projection_2d(poses_3d)
 
     # ---- ROM angles ----
-    rom_angles = compute_rom_angles(pos39)   # (T, 8)
+    rom_angles = compute_rom_angles(pos39)   # (T, 6)
 
     return poses_3d, poses_2d, rom_angles
 

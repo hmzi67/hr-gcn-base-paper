@@ -1,18 +1,19 @@
 """
-Fine-tuning script for the GCADA rehabilitation pipeline.
+\"\"\"
+Fine-tuning/training script for GCADA rehabilitation pipeline.
 
-Loads a pre-trained HR-GCN checkpoint (trained on H3WB) and fine-tunes it
-on UI-PRMD data with the novel ClinicalPoseLoss (angle supervision +
-anatomical constraints).
+Train or fine-tune HR-GCN on UI-PRMD data with clinical angle supervision.
 
-Usage:
-    python train_rehab.py \
-        --pretrained checkpoint/ckpt_best.pth.tar \
-        --cfg checkpoint/w32_adam_lr1e-3.yaml \
-        --epochs 50 --lambda_angle 0.1 --lambda_constraint 0.05
+RECOMMENDED: from-scratch training (best for H3WB->Vicon domain shift):
+    python train_rehab.py --from_scratch --lr 5e-4 --batch_size 64 \\
+        --backbone_lr_factor 1.0 --warmup_epochs 3 --progressive_weights
 
-Baseline (HR-GCN only, no novel losses):
-    python train_rehab.py ... --lambda_angle 0.0 --lambda_constraint 0.0
+KEY FLAGS:
+  --from_scratch: Train from random init (ignore pretrained)
+  --progressive_weights: Ramp angle loss 0.1x->1.0x over epochs
+  --warmup_epochs 3: Minimal warmup (was 11, now configurable)
+  --batch_size 64: Smaller for domain adaptation (was 256)
+  --lr 5e-4: from-scratch learning rate (was 1e-4)
 """
 
 from __future__ import print_function, absolute_import, division
@@ -43,7 +44,7 @@ import models.graph_hrnet as ghr
 from models.graph_sh import GraphSH
 
 ROM_JOINT_NAMES = [
-    'Cervical Yaw', 'Cervical Pitch', 'Cervical Roll',
+    'Cervical Pitch',
     'Trunk Flex', 'Left Hip', 'Right Hip',
     'Left Knee', 'Right Knee',
 ]
@@ -65,19 +66,30 @@ def parse_args():
     parser.add_argument('-m', '--model', default=1, type=int,
                         help='Model index (1-4, must match pretrained checkpoint)')
     parser.add_argument('-e', '--epochs', default=50, type=int)
-    parser.add_argument('--lr', default=1e-4, type=float,
-                        help='Learning rate (lower than scratch training)')
-    parser.add_argument('-b', '--batch_size', default=256, type=int)
+    parser.add_argument('--lr', default=5e-4, type=float,
+                        help='Learning rate. Recommended: 5e-4 (from-scratch) or 1e-4 (fine-tune)')
+    parser.add_argument('-b', '--batch_size', default=64, type=int,
+                        help='Batch size. Smaller (32-64) better for domain adaptation.')
     parser.add_argument('--freeze_backbone', action='store_true',
                         help='Freeze all HR-GCN weights; train angle head only')
-    parser.add_argument('--backbone_lr_factor', default=0.1, type=float,
-                        help='Backbone LR = args.lr * backbone_lr_factor '
-                             '(differential learning rate; default 0.1 → 10× '
-                             'lower than angle head)')
-    parser.add_argument('--lambda_angle', default=0.1, type=float,
-                        help='Weight of clinical angle supervision loss')
-    parser.add_argument('--lambda_constraint', default=0.05, type=float,
-                        help='Weight of anatomical constraint penalty')
+    parser.add_argument('--backbone_lr_factor', default=0.5, type=float,
+                        help='Backbone LR = args.lr * backbone_lr_factor. '
+                             'Recommend 0.5 (2x lower) for fine-tune; 1.0 for from-scratch.')
+    parser.add_argument('--lambda_angle', default=0.01, type=float,
+                        help='Weight of clinical angle supervision loss. Start low (0.01-0.05), '
+                             'increase with --progressive_weights')
+    parser.add_argument('--lambda_constraint', default=0.01, type=float,
+                        help='Weight of anatomical constraint penalty. Start low with angle loss.')
+    parser.add_argument('--warmup_epochs', default=3, type=int,
+                        help='Freeze backbone for N initial epochs (let angle head initialize). '
+                             'Set to 0 for no warmup (recommended for from-scratch). Default 3.')
+    parser.add_argument('--progressive_weights', action='store_true',
+                        help='Enable progressive loss weighting: low angle/constraint early, '
+                             'increase during training. Recommended for domain adaptation.')
+    parser.add_argument('--from_scratch', action='store_true',
+                        help='Ignore --pretrained; train from random init. '
+                             'Recommended if H3WB model is mismatched. Use with --lr 5e-4 '
+                             '--backbone_lr_factor 1.0')
     parser.add_argument('-c', '--checkpoint', default='checkpoint_rehab', type=str,
                         help='Output checkpoint directory')
     parser.add_argument('--data_train', default='data/uiprmd_train.npz', type=str)
@@ -124,7 +136,7 @@ class UIRPMDDataset(TensorDataset):
         d = np.load(npz_path, allow_pickle=True)
         poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
         poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
-        rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 8)
+        rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 6)
         super().__init__(poses_2d, poses_3d, rom_angles)
 
 
@@ -218,7 +230,7 @@ def evaluate(loader, model, angle_head, device):
     angle_head.eval()
 
     body_mpjpe_sum = 0.0
-    rom_mae_sum    = np.zeros(8, dtype=np.float64)
+    rom_mae_sum    = np.zeros(6, dtype=np.float64)
     n_samples      = 0
 
     for inputs_2d, targets_3d, target_angles in loader:
@@ -258,6 +270,13 @@ def main():
 
     print('==> Log file:', log_path)
     print('==> Settings:', vars(args))
+    
+    # Validate settings
+    if args.progressive_weights and args.from_scratch:
+        print('=> INFO: from-scratch + progressive_weights recommended combination')
+    if args.from_scratch and args.pretrained:
+        print('=> WARNING: --from_scratch set; ignoring --pretrained')
+        args.pretrained = ''
 
     device = torch.device('cuda:0')
     cudnn.benchmark = True
@@ -276,7 +295,7 @@ def main():
     print('    Total parameters: {:.2f}M'.format(
         sum(p.numel() for p in model.parameters()) / 1e6))
 
-    if args.pretrained:
+    if args.pretrained and not args.from_scratch:
         if not path.isfile(args.pretrained):
             raise FileNotFoundError(f'Checkpoint not found: {args.pretrained}')
         print(f'==> Loading pretrained weights from {args.pretrained}')
@@ -289,6 +308,8 @@ def main():
         if unexpected:
             print(f'    Unexpected keys ({len(unexpected)}): ignored '
                   f'(e.g. cross-attention layers not in base model)')
+    elif args.from_scratch:
+        print('==> Training from random initialization (--from_scratch)')
 
     # ---- Clinical angle head ----
     angle_head = ClinicalAngleHead(in_features=69, hidden=128).to(device)
@@ -299,10 +320,7 @@ def main():
             p.requires_grad = False
         print('==> Backbone FROZEN — training angle head only')
 
-    # ---- Optimizer with differential learning rates ----
-    # Angle head learns at args.lr; backbone (if unfrozen) at lr * backbone_lr_factor.
-    # Differential LR lets the angle head adapt quickly while backbone fine-tunes slowly,
-    # preventing catastrophic forgetting of H3WB 3D features.
+    # Optimizer with differential learning rates
     backbone_lr = args.lr * args.backbone_lr_factor
     if args.freeze_backbone:
         optimizer = torch.optim.Adam(angle_head.parameters(), lr=args.lr)
@@ -312,14 +330,16 @@ def main():
             {'params': model.parameters(),      'lr': backbone_lr},
             {'params': angle_head.parameters(), 'lr': args.lr},
         ])
-        print(f'==> Optimizer: backbone lr={backbone_lr:.2e}  '
-              f'angle_head lr={args.lr:.2e}')
+        status = '(from-scratch)' if args.from_scratch else '(fine-tune)'
+        print(f'==> Optimizer {status}: backbone lr={backbone_lr:.2e}  angle_head lr={args.lr:.2e}')
 
     # ---- Loss ----
     criterion = ClinicalPoseLoss(
         lambda_angle=args.lambda_angle,
         lambda_constraint=args.lambda_constraint,
     ).to(device)
+    if args.progressive_weights:
+        print('==> Progressive weighting enabled: 0.1x → 0.5x → 1.0x over training')
 
     # ---- Data ----
     print('==> Loading UI-PRMD data...')
@@ -346,10 +366,36 @@ def main():
     history  = []
 
     for epoch in range(args.epochs):
-        # Show current LRs from both param groups
+        # Backbone warmup (optional): freeze for first N epochs to let angle head initialize.
+        if not args.freeze_backbone:
+            if epoch < args.warmup_epochs:
+                for p in model.parameters():
+                    p.requires_grad = False
+                if epoch == 0 and args.warmup_epochs > 0:
+                    print(f'==> Warmup: backbone frozen for epochs 1-{args.warmup_epochs}')
+            else:
+                for p in model.parameters():
+                    p.requires_grad = True
+                if epoch == args.warmup_epochs and args.warmup_epochs > 0:
+                    print(f'==> Warmup complete: backbone unfrozen')
+        
+        # Progressive loss weighting: low angle/constraint early, increase later.
+        if args.progressive_weights:
+            if epoch < args.epochs // 3:
+                criterion.lambda_angle = args.lambda_angle * 0.1
+                criterion.lambda_constraint = args.lambda_constraint * 0.1
+            elif epoch < 2 * args.epochs // 3:
+                criterion.lambda_angle = args.lambda_angle * 0.5
+                criterion.lambda_constraint = args.lambda_constraint * 0.5
+            else:
+                criterion.lambda_angle = args.lambda_angle
+                criterion.lambda_constraint = args.lambda_constraint
+
+        # Show current LRs and loss weights
         lrs = [pg['lr'] for pg in optimizer.param_groups]
         lr_str = '  '.join(f'{lr:.2e}' for lr in lrs)
-        print(f'\nEpoch {epoch+1}/{args.epochs}  lr=[{lr_str}]')
+        weights_str = f'  λ_angle={criterion.lambda_angle:.3f} λ_constr={criterion.lambda_constraint:.3f}' if args.progressive_weights else ''
+        print(f'\nEpoch {epoch+1}/{args.epochs}  lr=[{lr_str}]{weights_str}')
 
         train_loss = train_one_epoch(
             train_loader, model, angle_head, criterion, optimizer, device, epoch)

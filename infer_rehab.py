@@ -261,9 +261,9 @@ def main():
             out_3d = out_3d - (out_3d[:, 11:12] + out_3d[:, 12:13]) / 2.0
 
             # ---- ROM angles ----
-            pred_angles = angle_head(body_3d)                      # (1, 8)
+            pred_angles = angle_head(body_3d)                      # (1, 6)
             pred_angles = clamp_angles_to_valid_range(pred_angles)
-            angles_np = pred_angles[0].cpu().numpy()               # (8,)
+            angles_np = pred_angles[0].cpu().numpy()               # (6,)
 
             # ---- One-Euro smoothing on body joints ----
             joints_np = out_3d[0, :23].cpu().numpy()              # (23, 3)

@@ -54,8 +54,8 @@ class ClinicalPoseLoss(nn.Module):
         target_face:    torch.Tensor,
         target_lhand:   torch.Tensor,
         target_rhand:   torch.Tensor,
-        pred_angles:    torch.Tensor,   # (B, 8)  from ClinicalAngleHead
-        target_angles:  torch.Tensor,   # (B, 8)  Vicon ground truth degrees
+        pred_angles:    torch.Tensor,   # (B, 6)  from ClinicalAngleHead
+        target_angles:  torch.Tensor,   # (B, 6)  Vicon ground truth degrees
     ) -> dict:
         # 1. Standard position losses (preserves original HR-GCN behavior)
         L_pos = (
