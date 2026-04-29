@@ -29,6 +29,7 @@ import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from lib.config import cfg
@@ -189,7 +190,15 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device, epo
         target_angles = target_angles.to(device)
 
         body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
-        pred_angles = angle_head(body_3d)
+
+        # Baseline mode: lambda_angle=0 means the angle head has no path into
+        # criterion's total loss, so it would receive zero gradient and never
+        # update from random init.  Fix: detach body_3d so the backbone stays
+        # MPJPE-only (clean comparison), then add a direct head regression loss.
+        baseline_mode = (criterion.lambda_angle == 0.0
+                         and criterion.lambda_constraint == 0.0)
+        body_for_head = body_3d.detach() if baseline_mode else body_3d
+        pred_angles = angle_head(body_for_head)
 
         loss_dict = criterion(
             body_3d,  face_3d,  lhand_3d,  rhand_3d,
@@ -201,8 +210,14 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device, epo
             target_angles,
         )
 
+        if baseline_mode:
+            # Direct angle-head loss (weight=1.0); does not touch backbone
+            backward_loss = loss_dict['total'] + F.l1_loss(pred_angles, target_angles)
+        else:
+            backward_loss = loss_dict['total']
+
         optimizer.zero_grad()
-        loss_dict['total'].backward()
+        backward_loss.backward()
         nn.utils.clip_grad_norm_(
             list(model.parameters()) + list(angle_head.parameters()),
             max_norm=1.0,
@@ -229,32 +244,64 @@ def evaluate(loader, model, angle_head, device):
     model.eval()
     angle_head.eval()
 
-    body_mpjpe_sum = 0.0
-    rom_mae_sum    = np.zeros(6, dtype=np.float64)
-    n_samples      = 0
+    body_mpjpe_sum         = 0.0
+    face_mpjpe_sum         = 0.0
+    hand_mpjpe_sum         = 0.0
+    face_aligned_mpjpe_sum = 0.0
+    hand_aligned_mpjpe_sum = 0.0
+    rom_mae_sum            = np.zeros(6, dtype=np.float64)
+    n_samples              = 0
 
-    for inputs_2d, targets_3d, target_angles in loader:
-        inputs_2d     = inputs_2d.to(device)
-        targets_3d    = targets_3d.to(device)
-        target_angles = target_angles.to(device)
+    with torch.no_grad():
+        for inputs_2d, targets_3d, target_angles in loader:
+            inputs_2d     = inputs_2d.to(device)
+            targets_3d    = targets_3d.to(device)
+            target_angles = target_angles.to(device)
+            B             = inputs_2d.shape[0]
 
-        body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
-        pred_angles = angle_head(body_3d)
+            body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
+            pred_angles = angle_head(body_3d)
 
-        # Body MPJPE (mm)
-        body_gt = targets_3d[:, :23]
-        body_mpjpe_sum += mpjpe(body_3d, body_gt).item() * 1000 * inputs_2d.shape[0]
+            # Body MPJPE (mm)
+            body_mpjpe_sum += mpjpe(body_3d, targets_3d[:, :23]).item() * 1000 * B
 
-        # ROM MAE per joint (degrees)
-        mae = (pred_angles - target_angles).abs().mean(dim=0).cpu().numpy()
-        rom_mae_sum += mae * inputs_2d.shape[0]
-        n_samples   += inputs_2d.shape[0]
+            # Face MPJPE — targets zero-padded for UI-PRMD
+            face_mpjpe_sum += mpjpe(face_3d, targets_3d[:, 23:91]).item() * 1000 * B
 
-    body_mpjpe_mm = body_mpjpe_sum / n_samples
-    rom_mae       = rom_mae_sum    / n_samples
-    mean_rom_mae  = rom_mae.mean()
+            # Hand MPJPE (left + right concatenated) — targets zero-padded for UI-PRMD
+            hand_pred = torch.cat((lhand_3d, rhand_3d), dim=1)
+            hand_gt   = targets_3d[:, 91:]
+            hand_mpjpe_sum += mpjpe(hand_pred, hand_gt).item() * 1000 * B
 
-    return body_mpjpe_mm, rom_mae, mean_rom_mae
+            # Face aligned: centred at nose (joint 30 within face block)
+            face_aligned_pred = face_3d - face_3d[:, 30:31]
+            face_aligned_gt   = (targets_3d - targets_3d[:, 53:54])[:, 23:91]
+            face_aligned_mpjpe_sum += mpjpe(face_aligned_pred, face_aligned_gt).item() * 1000 * B
+
+            # Hand aligned: each hand centred at its wrist (index 0)
+            hand_aligned_pred = torch.cat(
+                (lhand_3d - lhand_3d[:, :1], rhand_3d - rhand_3d[:, :1]), dim=1)
+            hand_aligned_gt = torch.cat(
+                (targets_3d[:, 91:112] - targets_3d[:, 91:92],
+                 targets_3d[:, 112:]   - targets_3d[:, 112:113]), dim=1)
+            hand_aligned_mpjpe_sum += mpjpe(hand_aligned_pred, hand_aligned_gt).item() * 1000 * B
+
+            # ROM MAE per joint (degrees)
+            mae = (pred_angles - target_angles).abs().mean(dim=0).cpu().numpy()
+            rom_mae_sum += mae * B
+            n_samples   += B
+
+    body_mpjpe_mm         = body_mpjpe_sum         / n_samples
+    face_mpjpe_mm         = face_mpjpe_sum         / n_samples
+    hand_mpjpe_mm         = hand_mpjpe_sum         / n_samples
+    face_aligned_mpjpe_mm = face_aligned_mpjpe_sum / n_samples
+    hand_aligned_mpjpe_mm = hand_aligned_mpjpe_sum / n_samples
+    rom_mae               = rom_mae_sum            / n_samples
+    mean_rom_mae          = rom_mae.mean()
+
+    return (body_mpjpe_mm, face_mpjpe_mm, hand_mpjpe_mm,
+            face_aligned_mpjpe_mm, hand_aligned_mpjpe_mm,
+            rom_mae, mean_rom_mae)
 
 
 # ---------------------------------------------------------------------------
@@ -353,9 +400,11 @@ def main():
                               pin_memory=True)
     print(f'    Train frames: {len(train_set)}  Test frames: {len(test_set)}')
 
-    # ---- LR scheduler: halve LR when ROM MAE stops improving ----
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5,
+    # ---- LR scheduler: cosine decay so baseline and GCADA see identical LR profiles ----
+    # ReduceLROnPlateau was asymmetric: baseline ROM MAE never improved → LR halved at
+    # epoch 8; GCADA ROM MAE improved every epoch → LR never decayed → unfair comparison.
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs, eta_min=1e-7,
     )
 
     # ---- Output dir ----
@@ -400,11 +449,16 @@ def main():
         train_loss = train_one_epoch(
             train_loader, model, angle_head, criterion, optimizer, device, epoch)
 
-        body_mpjpe, rom_mae, mean_mae = evaluate(
-            test_loader, model, angle_head, device)
+        (body_mpjpe, face_mpjpe, hand_mpjpe,
+         face_aligned_mpjpe, hand_aligned_mpjpe,
+         rom_mae, mean_mae) = evaluate(test_loader, model, angle_head, device)
 
-        # Per-joint MAE breakdown every epoch
-        print(f'  [Eval] Body MPJPE: {body_mpjpe:.2f} mm | Mean ROM MAE: {mean_mae:.2f} deg')
+        # Per-epoch eval summary (face/hand are 0-padded in UI-PRMD targets)
+        print(f'  [Eval] Body MPJPE: {body_mpjpe:.2f} mm'
+              f' | Face: {face_mpjpe:.2f} mm | Hand: {hand_mpjpe:.2f} mm'
+              f' | Face(aligned): {face_aligned_mpjpe:.2f} mm'
+              f' | Hand(aligned): {hand_aligned_mpjpe:.2f} mm'
+              f' | Mean ROM MAE: {mean_mae:.2f} deg')
         print(f'  {"Joint":<16} | {"MAE (deg)":>9}')
         print(f'  {"-"*16}-+-{"-"*9}')
         for name, mae_val in zip(ROM_JOINT_NAMES, rom_mae):
@@ -412,15 +466,19 @@ def main():
             print(f'  {name:<16} | {mae_val:>9.1f}{marker}')
         print(f'  {"-"*16}-+-{"-"*9}')
 
-        # Step scheduler on ROM MAE
-        scheduler.step(mean_mae)
+        # Cosine scheduler steps unconditionally each epoch
+        scheduler.step()
 
         history.append({
-            'epoch':      epoch + 1,
-            'train_loss': train_loss,
-            'body_mpjpe': body_mpjpe,
-            'rom_mae':    rom_mae.tolist(),
-            'mean_mae':   mean_mae,
+            'epoch':              epoch + 1,
+            'train_loss':         train_loss,
+            'body_mpjpe':         body_mpjpe,
+            'face_mpjpe':         face_mpjpe,
+            'hand_mpjpe':         hand_mpjpe,
+            'face_aligned_mpjpe': face_aligned_mpjpe,
+            'hand_aligned_mpjpe': hand_aligned_mpjpe,
+            'rom_mae':            rom_mae.tolist(),
+            'mean_mae':           mean_mae,
         })
 
         if mean_mae < best_mae:
@@ -437,7 +495,7 @@ def main():
                   f'(checkpoint saved)')
 
     # ---- Final summary table ----
-    _, final_rom_mae, final_mean_mae = evaluate(test_loader, model, angle_head, device)
+    (_, _, _, _, _, final_rom_mae, final_mean_mae) = evaluate(test_loader, model, angle_head, device)
 
     print('\n' + '='*46)
     print(f'{"Joint":<16} | {"MAE (deg)":>9}')
