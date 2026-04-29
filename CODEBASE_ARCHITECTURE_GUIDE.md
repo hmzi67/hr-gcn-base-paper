@@ -255,3 +255,10 @@ python HRNet_GCN_WB.py --model 1 --gcn dc_preagg --evaluate checkpoint/ckpt_best
 python infer.py --evaluate checkpoint_58.4/ckpt_best.pth.tar -cfg checkpoint_58.4/w32_adam_lr1e-3.yaml
 ```
 
+
+
+
+
+
+(venv) genesys@genesys-MS-7B05:~/hamza/HR-GCN % python train_rehab.py --pretrained checkpoint/HRGCN/dc_preagg-2026-04-24T10:48:02/ckpt_best.pth.tar --cfg w32_adam_lr1e-3.yaml --epochs 50 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_v4
+==> Log file: checkpoint_rehab_baseline_v4/train_rehab.log
