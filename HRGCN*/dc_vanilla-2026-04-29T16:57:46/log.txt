@@ -1,1 +1,0 @@
-epoch	lr	loss_train	error_eval_p1	error_body	error_face	error_hand	error_face_aligned	error_hand_aligned	
