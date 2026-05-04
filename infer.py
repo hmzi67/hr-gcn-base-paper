@@ -29,7 +29,6 @@ from common.camera import get_uvd2xyz
 from utils.prepare_data_h3wb import Human3WBDataset, TRAIN_SUBJECTS, TEST_SUBJECTS
 
 from models.graph_sh import GraphSH
-import models.graph_hrnet_multi_branch_58 as ghrmb_58
 import models.graph_hrnet_multi_branch as ghrmb
 import models.graph_resnet as GraphRes
 import models.graph_hrnet as ghr
@@ -110,7 +109,7 @@ def main(args):
 
     cfg.merge_from_file(args.configuration)
 
-    model_pos = ghrmb_58.get_pose_net(cfg, True, adj, p_dropout, args.gcn, dataset.skeleton().joints_group()).to(device)
+    model_pos = ghrmb.get_pose_net(cfg, True, adj, p_dropout, args.gcn, dataset.skeleton().joints_group()).to(device)
 
     print("==> Total parameters: {:.2f}M".format(sum(p.numel() for p in model_pos.parameters()) / 1000000.0))
 

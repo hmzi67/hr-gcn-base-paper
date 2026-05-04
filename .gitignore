@@ -8,9 +8,12 @@ __pycache__/
 .mypy_cache/
 
 checkpoint/
+checkpoint_*/
+*.pth.tar
 data/h3wb_train.npz
 data/h3wb_test.npz
 3d_keypoints.pt
 
 lib/nms/build/
 lib/nms/*.so
+/data
