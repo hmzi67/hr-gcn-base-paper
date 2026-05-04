@@ -1,4 +1,0 @@
-==> Log file: checkpoint_rehab/train_rehab.log
-==> Settings: {'pretrained': 'checkpoint/HRGCN/dc_preagg-2026-04-24T10:48:02/ckpt_best.pth.tar', 'cfg': 'w32_adam_lr1e-3.yaml', 'gcn': 'dc_preagg', 'model': 1, 'epochs': 100, 'lr': 0.0001, 'batch_size': 256, 'freeze_backbone': False, 'backbone_lr_factor': 0.1, 'lambda_angle': 0.1, 'lambda_constraint': 0.05, 'checkpoint': 'checkpoint_rehab', 'data_train': 'data/uiprmd_train.npz', 'data_test': 'data/uiprmd_test.npz', 'num_workers': 4, 'hid_dim': 64, 'num_layers': 4, 'dropout': 0.0, 'log_file': 'checkpoint_rehab/train_rehab.log'}
-==> Loading skeleton...
-Dataset preparation is done!

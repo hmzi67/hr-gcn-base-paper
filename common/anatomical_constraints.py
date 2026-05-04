@@ -12,21 +12,37 @@ from typing import Dict, Tuple
 
 # Valid ROM ranges (degrees) based on clinical literature
 # Format: (min_degrees, max_degrees)
-# cervical_yaw and cervical_roll omitted: UI-PRMD provides no ground truth for
-# axial rotation/lateral tilt (single-frame geometry cannot recover them).
 REHAB_JOINT_LIMITS: Dict[str, Tuple[float, float]] = {
-    'cervical_pitch': (-60.0,  60.0),   # fwd/back neck bend
-    'trunk_flex':     (-90.0,  90.0),   # trunk flexion/extension
-    'left_hip':       (-30.0, 120.0),   # hip flexion
-    'right_hip':      (-30.0, 120.0),
-    'left_knee':      (  0.0, 150.0),   # knee flexion only
-    'right_knee':     (  0.0, 150.0),
+    'cervical_pitch':      (-60.0,  60.0),
+    'trunk_flex':          (-90.0,  90.0),
+    'left_shoulder_flex':  (-30.0, 180.0),
+    'right_shoulder_flex': (-30.0, 180.0),
+    'left_shoulder_abd':   (  0.0, 180.0),
+    'right_shoulder_abd':  (  0.0, 180.0),
+    'left_hip':            (-30.0, 120.0),
+    'right_hip':           (-30.0, 120.0),
+    'left_knee':           (  0.0, 150.0),
+    'right_knee':          (  0.0, 150.0),
+    'left_ankle':          ( 50.0, 130.0),   # 90°=neutral, >90°=dorsiflex
+    'right_ankle':         ( 50.0, 130.0),
 }
 
 JOINT_LIMIT_TENSOR_ORDER = [
-    'cervical_pitch',
-    'trunk_flex', 'left_hip', 'right_hip',
-    'left_knee', 'right_knee',
+    'cervical_pitch', 'trunk_flex',
+    'left_shoulder_flex', 'right_shoulder_flex',
+    'left_shoulder_abd',  'right_shoulder_abd',
+    'left_hip',           'right_hip',
+    'left_knee',          'right_knee',
+    'left_ankle',         'right_ankle',
+]
+
+JOINT_NAMES_DISPLAY = [
+    'Cerv Pitch', 'Trunk Flex',
+    'L Sho Flex', 'R Sho Flex',
+    'L Sho Abd',  'R Sho Abd',
+    'L Hip',      'R Hip',
+    'L Knee',     'R Knee',
+    'L Ankle',    'R Ankle',
 ]
 
 

@@ -166,18 +166,30 @@ Preprocessed NPZ schema:
 ```
 poses_2d:     (N, 133, 2)   — normalized 2D keypoints (orthographic projection)
 poses_3d:     (N, 133, 3)   — 3D in meters, hip-centred; face+hands zero-padded
-rom_angles:   (N, 8)        — geometric ROM angles in degrees
+rom_angles:   (N, 12)       — geometric ROM angles in degrees (v2: 12 joints)
 subject_ids:  (N,)          — 0-indexed subject (0–9)
 exercise_ids: (N,)          — 0-indexed exercise (0–9)
 frame_ids:    (N,)          — frame index within each file
 ```
+
+**ROM angle order (12 joints):**
+```
+0: cerv_pitch       1: trunk_flex
+2: l_sho_flex       3: r_sho_flex
+4: l_sho_abd        5: r_sho_abd
+6: l_hip            7: r_hip
+8: l_knee           9: r_knee
+10: l_ankle        11: r_ankle
+```
+Ankle convention: 90°=neutral, >90°=dorsiflexion (toes up), <90°=plantarflexion.
+Shoulder flex/abd: 0°=arm at side, increases as arm rises.
 
 ### Novel Contributions (Thesis)
 
 | ID | File | Description |
 |----|------|-------------|
 | **N1** | `common/anatomical_constraints.py` | `AnatomicalConstraintLoss`: soft quadratic penalty when predicted angles violate clinical ROM limits. Hard clamp at inference via `clamp_angles_to_valid_range`. No prior whole-body pose method enforces rehab-specific limits in the loss. |
-| **N2** | `common/clinical_loss.py` + `models/clinical_angle_head.py` | `ClinicalPoseLoss`: L_total = L_MPJPE + λ_angle × L_ROM + λ_constraint × L_anatomical. `ClinicalAngleHead`: lightweight MLP (69→128→64→8) regressing ROM degrees directly. HR-GCN baseline uses only L_MPJPE. |
+| **N2** | `common/clinical_loss.py` + `models/clinical_angle_head.py` | `ClinicalPoseLoss`: L_total = L_MPJPE + λ_angle × L_ROM + λ_constraint × L_anatomical. `ClinicalAngleHead`: lightweight MLP (69→128→64→12) regressing 12 ROM angles. HR-GCN baseline uses only L_MPJPE. |
 
 **Thesis experiment**:
 - Run baseline (`--lambda_angle 0.0 --lambda_constraint 0.0`) → record Mean ROM MAE

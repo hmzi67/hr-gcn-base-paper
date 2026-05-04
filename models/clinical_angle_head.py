@@ -16,10 +16,12 @@ from common.anatomical_constraints import clamp_angles_to_valid_range
 class ClinicalAngleHead(nn.Module):
     """
     Lightweight MLP that maps body 3D joints (23 x 3 = 69 features)
-    to 6 ROM angles in degrees.
+    to 12 ROM angles in degrees.
 
     Output order matches JOINT_LIMIT_TENSOR_ORDER:
-    [cerv_pitch, trunk_flex, l_hip, r_hip, l_knee, r_knee]
+    [cerv_pitch, trunk_flex,
+     l_sho_flex, r_sho_flex, l_sho_abd, r_sho_abd,
+     l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle]
     """
     def __init__(self, in_features: int = 69, hidden: int = 128):
         super().__init__()
@@ -29,13 +31,13 @@ class ClinicalAngleHead(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(hidden, 64),
             nn.ReLU(),
-            nn.Linear(64, 6),   # 6 ROM angles
+            nn.Linear(64, 12),   # 12 ROM angles
         )
 
     def forward(self, body_joints_3d: torch.Tensor) -> torch.Tensor:
         """
         body_joints_3d: (B, 23, 3) — body joints from HR-GCN output[:23]
-        returns: (B, 6) ROM angles in degrees
+        returns: (B, 12) ROM angles in degrees
         """
         B = body_joints_3d.shape[0]
         x = body_joints_3d.reshape(B, -1)   # (B, 69)
@@ -96,11 +98,35 @@ def compute_rom_angles_geometric(joints_3d: torch.Tensor) -> torch.Tensor:
     l_knee = 180.0 - torch.acos(vec_cos(-l_femur, l_tibia).clamp(-1 + 1e-6, 1 - 1e-6)) * 180 / np.pi
     r_knee = 180.0 - torch.acos(vec_cos(-r_femur, r_tibia).clamp(-1 + 1e-6, 1 - 1e-6)) * 180 / np.pi
 
+    # Shoulder flexion (0° arm at side, increases forward)
+    l_upper_arm = j[:, 7] - j[:, 5]   # L_shoulder → L_elbow
+    r_upper_arm = j[:, 8] - j[:, 6]
+    spine_vec_norm = spine_vec / (spine_vec.norm(dim=-1, keepdim=True) + 1e-8)
+    l_sho_flex = 180.0 - torch.acos(vec_cos(spine_vec, l_upper_arm).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+    r_sho_flex = 180.0 - torch.acos(vec_cos(spine_vec, r_upper_arm).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+
+    # Shoulder abduction (frontal-plane projection)
+    lr_axis = j[:, 6] - j[:, 5]
+    frontal_n = torch.cross(lr_axis, vertical, dim=-1)
+    frontal_n = frontal_n / (frontal_n.norm(dim=-1, keepdim=True) + 1e-8)
+    l_proj = l_upper_arm - (l_upper_arm * frontal_n).sum(-1, keepdim=True) * frontal_n
+    r_proj = r_upper_arm - (r_upper_arm * frontal_n).sum(-1, keepdim=True) * frontal_n
+    l_sho_abd = 180.0 - torch.acos(vec_cos(vertical, l_proj).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+    r_sho_abd = 180.0 - torch.acos(vec_cos(vertical, r_proj).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+
+    # Ankle dorsiflexion (90° = neutral)
+    l_foot = j[:, 17] - j[:, 15]   # L_ankle → L_big_toe
+    r_foot = j[:, 20] - j[:, 16]
+    l_ankle = 180.0 - torch.acos(vec_cos(-l_tibia, l_foot).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+    r_ankle = 180.0 - torch.acos(vec_cos(-r_tibia, r_foot).clamp(-1+1e-6, 1-1e-6)) * 180 / np.pi
+
     angles = torch.stack([
-        cerv_pitch,
-        trunk,
-        l_hip, r_hip,
-        l_knee, r_knee,
-    ], dim=1)  # (B, 6)
+        cerv_pitch, trunk,
+        l_sho_flex, r_sho_flex,
+        l_sho_abd,  r_sho_abd,
+        l_hip,      r_hip,
+        l_knee,     r_knee,
+        l_ankle,    r_ankle,
+    ], dim=1)  # (B, 12)
 
     return angles

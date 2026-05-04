@@ -31,6 +31,7 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 from lib.config import cfg
 from common.graph_utils import adj_mx_from_skeleton
@@ -45,10 +46,53 @@ import models.graph_hrnet as ghr
 from models.graph_sh import GraphSH
 
 ROM_JOINT_NAMES = [
-    'Cervical Pitch',
-    'Trunk Flex', 'Left Hip', 'Right Hip',
-    'Left Knee', 'Right Knee',
+    'Cerv Pitch',  'Trunk Flex',
+    'L Sho Flex',  'R Sho Flex',
+    'L Sho Abd',   'R Sho Abd',
+    'L Hip',       'R Hip',
+    'L Knee',      'R Knee',
+    'L Ankle',     'R Ankle',
 ]
+# Short abbreviations for single-line epoch log
+ROM_SHORT = ['CP', 'TF', 'LSF', 'RSF', 'LSA', 'RSA', 'LH', 'RH', 'LK', 'RK', 'LA', 'RA']
+
+
+# ---------------------------------------------------------------------------
+# Partial checkpoint loading (v1 → v2 angle-head expansion 6→12 outputs)
+# ---------------------------------------------------------------------------
+
+def load_checkpoint_partial(model, angle_head, checkpoint_path, device):
+    """
+    Load backbone weights fully and angle-head weights partially.
+    Hidden layers are copied exactly; the output layer (net.5) copies the
+    first 6 rows and leaves new rows (7-12) at random init.
+    """
+    print(f'==> Partial load from {checkpoint_path}')
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    model.load_state_dict(ckpt['state_dict'], strict=False)
+    print(f'    Backbone loaded (epoch {ckpt.get("epoch", "?")})')
+
+    old_head = ckpt.get('angle_head_state_dict')
+    if old_head is None:
+        print('    No angle_head in checkpoint — fresh init')
+        return None
+
+    new_head = angle_head.state_dict()
+    for key in new_head:
+        if key not in old_head:
+            continue
+        os_, ns_ = old_head[key].shape, new_head[key].shape
+        if os_ == ns_:
+            new_head[key] = old_head[key]
+        elif len(os_) == len(ns_) and os_[0] < ns_[0]:
+            # Output dimension expanded (e.g. [6,64] → [12,64])
+            new_head[key][:os_[0]] = old_head[key]
+            print(f'    {key}: partial copy {os_} → {ns_} (new rows random-init)')
+        else:
+            print(f'    {key}: shape mismatch {os_} vs {ns_}, skipped')
+    angle_head.load_state_dict(new_head)
+    return ckpt.get('best_mae')
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +181,7 @@ class UIRPMDDataset(TensorDataset):
         d = np.load(npz_path, allow_pickle=True)
         poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
         poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
-        rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 6)
+        rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 12)
         super().__init__(poses_2d, poses_3d, rom_angles)
 
 
@@ -177,24 +221,24 @@ def _get_skeleton():
 # Training / Evaluation helpers
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(loader, model, angle_head, criterion, optimizer, device, epoch):
+def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
+                    epoch, total_epochs):
     model.train()
     angle_head.train()
 
     total_loss = total_pos = total_ang = total_con = 0.0
-    n_batches = len(loader)
 
-    for i, (inputs_2d, targets_3d, target_angles) in enumerate(loader):
+    pbar = tqdm(loader, desc=f'Ep{epoch+1:3d}/{total_epochs}',
+                ncols=100, leave=False, file=sys.stdout)
+
+    for i, (inputs_2d, targets_3d, target_angles) in enumerate(pbar):
         inputs_2d     = inputs_2d.to(device)
         targets_3d    = targets_3d.to(device)
         target_angles = target_angles.to(device)
 
         body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
 
-        # Baseline mode: lambda_angle=0 means the angle head has no path into
-        # criterion's total loss, so it would receive zero gradient and never
-        # update from random init.  Fix: detach body_3d so the backbone stays
-        # MPJPE-only (clean comparison), then add a direct head regression loss.
+        # Baseline mode: angle head detached so backbone stays MPJPE-only
         baseline_mode = (criterion.lambda_angle == 0.0
                          and criterion.lambda_constraint == 0.0)
         body_for_head = body_3d.detach() if baseline_mode else body_3d
@@ -211,7 +255,6 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device, epo
         )
 
         if baseline_mode:
-            # Direct angle-head loss (weight=1.0); does not touch backbone
             backward_loss = loss_dict['total'] + F.l1_loss(pred_angles, target_angles)
         else:
             backward_loss = loss_dict['total']
@@ -224,19 +267,20 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device, epo
         )
         optimizer.step()
 
+        n = i + 1
         total_loss += loss_dict['total'].item()
         total_pos  += loss_dict['L_pos']
         total_ang  += loss_dict['L_angle']
         total_con  += loss_dict['L_constraint']
 
-        if (i + 1) % 10 == 0 or (i + 1) == n_batches:
-            print(f'  Batch {i+1:4d}/{n_batches} | '
-                  f'total={total_loss/(i+1):.4f}  '
-                  f'L_pos={total_pos/(i+1):.4f}  '
-                  f'L_angle={total_ang/(i+1):.4f}  '
-                  f'L_constr={total_con/(i+1):.4f}')
+        pbar.set_postfix(
+            loss=f'{total_loss/n:.4f}',
+            pos=f'{total_pos/n:.4f}',
+            ang=f'{total_ang/n:.4f}',
+        )
 
-    return total_loss / n_batches
+    pbar.close()
+    return total_loss / len(loader)
 
 
 @torch.no_grad()
@@ -249,7 +293,7 @@ def evaluate(loader, model, angle_head, device):
     hand_mpjpe_sum         = 0.0
     face_aligned_mpjpe_sum = 0.0
     hand_aligned_mpjpe_sum = 0.0
-    rom_mae_sum            = np.zeros(6, dtype=np.float64)
+    rom_mae_sum            = np.zeros(len(ROM_JOINT_NAMES), dtype=np.float64)
     n_samples              = 0
 
     with torch.no_grad():
@@ -342,24 +386,27 @@ def main():
     print('    Total parameters: {:.2f}M'.format(
         sum(p.numel() for p in model.parameters()) / 1e6))
 
+    # ---- Clinical angle head ----
+    angle_head = ClinicalAngleHead(in_features=69, hidden=128).to(device)
+
     if args.pretrained and not args.from_scratch:
         if not path.isfile(args.pretrained):
             raise FileNotFoundError(f'Checkpoint not found: {args.pretrained}')
-        print(f'==> Loading pretrained weights from {args.pretrained}')
-        ckpt = torch.load(args.pretrained, map_location=device)
-        missing, unexpected = model.load_state_dict(ckpt['state_dict'], strict=False)
-        print(f'    Loaded epoch {ckpt.get("epoch", "?")} '
-              f'error={ckpt.get("error", "?")}')
-        if missing:
-            print(f'    Missing keys ({len(missing)}): {missing[:3]}...')
-        if unexpected:
-            print(f'    Unexpected keys ({len(unexpected)}): ignored '
-                  f'(e.g. cross-attention layers not in base model)')
+        ckpt_probe = torch.load(args.pretrained, map_location='cpu', weights_only=False)
+        if 'angle_head_state_dict' in ckpt_probe:
+            # Rehab checkpoint — partial load to handle 6→12 output expansion
+            load_checkpoint_partial(model, angle_head, args.pretrained, device)
+        else:
+            # H3WB backbone checkpoint — load backbone only
+            print(f'==> Loading H3WB backbone from {args.pretrained}')
+            missing, unexpected = model.load_state_dict(
+                ckpt_probe['state_dict'], strict=False)
+            print(f'    epoch={ckpt_probe.get("epoch","?")}  '
+                  f'error={ckpt_probe.get("error","?")}')
+            if missing:
+                print(f'    Missing keys ({len(missing)}): {missing[:3]}...')
     elif args.from_scratch:
         print('==> Training from random initialization (--from_scratch)')
-
-    # ---- Clinical angle head ----
-    angle_head = ClinicalAngleHead(in_features=69, hidden=128).to(device)
 
     # ---- Optionally freeze backbone ----
     if args.freeze_backbone:
@@ -400,11 +447,14 @@ def main():
                               pin_memory=True)
     print(f'    Train frames: {len(train_set)}  Test frames: {len(test_set)}')
 
-    # ---- LR scheduler: cosine decay so baseline and GCADA see identical LR profiles ----
-    # ReduceLROnPlateau was asymmetric: baseline ROM MAE never improved → LR halved at
-    # epoch 8; GCADA ROM MAE improved every epoch → LR never decayed → unfair comparison.
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-7,
+    # ---- LR scheduler: ReduceLROnPlateau halves LR when val MAE stops improving ----
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='min',
+        factor=0.5,
+        patience=8,
+        min_lr=1e-6,
+        verbose=True,
     )
 
     # ---- Output dir ----
@@ -440,34 +490,23 @@ def main():
                 criterion.lambda_angle = args.lambda_angle
                 criterion.lambda_constraint = args.lambda_constraint
 
-        # Show current LRs and loss weights
-        lrs = [pg['lr'] for pg in optimizer.param_groups]
-        lr_str = '  '.join(f'{lr:.2e}' for lr in lrs)
-        weights_str = f'  λ_angle={criterion.lambda_angle:.3f} λ_constr={criterion.lambda_constraint:.3f}' if args.progressive_weights else ''
-        print(f'\nEpoch {epoch+1}/{args.epochs}  lr=[{lr_str}]{weights_str}')
-
         train_loss = train_one_epoch(
-            train_loader, model, angle_head, criterion, optimizer, device, epoch)
+            train_loader, model, angle_head, criterion, optimizer, device,
+            epoch, args.epochs)
 
         (body_mpjpe, face_mpjpe, hand_mpjpe,
          face_aligned_mpjpe, hand_aligned_mpjpe,
          rom_mae, mean_mae) = evaluate(test_loader, model, angle_head, device)
 
-        # Per-epoch eval summary (face/hand are 0-padded in UI-PRMD targets)
-        print(f'  [Eval] Body MPJPE: {body_mpjpe:.2f} mm'
-              f' | Face: {face_mpjpe:.2f} mm | Hand: {hand_mpjpe:.2f} mm'
-              f' | Face(aligned): {face_aligned_mpjpe:.2f} mm'
-              f' | Hand(aligned): {hand_aligned_mpjpe:.2f} mm'
-              f' | Mean ROM MAE: {mean_mae:.2f} deg')
-        print(f'  {"Joint":<16} | {"MAE (deg)":>9}')
-        print(f'  {"-"*16}-+-{"-"*9}')
-        for name, mae_val in zip(ROM_JOINT_NAMES, rom_mae):
-            marker = ' *' if mae_val == rom_mae.max() else ''
-            print(f'  {name:<16} | {mae_val:>9.1f}{marker}')
-        print(f'  {"-"*16}-+-{"-"*9}')
+        lrs = [pg['lr'] for pg in optimizer.param_groups]
+        lr_str = '/'.join(f'{lr:.1e}' for lr in lrs)
+        per_joint = ' '.join(f'{s}={v:.1f}' for s, v in zip(ROM_SHORT, rom_mae))
+        print(f'Ep{epoch+1:3d}/{args.epochs} loss={train_loss:.4f} '
+              f'MPJPE={body_mpjpe:.1f}mm MAE={mean_mae:.2f}° '
+              f'[{per_joint}] lr={lr_str}')
 
-        # Cosine scheduler steps unconditionally each epoch
-        scheduler.step()
+        # ReduceLROnPlateau: step on validation MAE
+        scheduler.step(mean_mae)
 
         history.append({
             'epoch':              epoch + 1,
@@ -491,20 +530,19 @@ def main():
                 'best_mae':               best_mae,
                 'args':                   vars(args),
             }, best_ckpt)
-            print(f'  --> New best Mean ROM MAE: {best_mae:.2f} deg  '
-                  f'(checkpoint saved)')
+            print(f'  --> NEW BEST {best_mae:.2f}° saved')
 
     # ---- Final summary table ----
     (_, _, _, _, _, final_rom_mae, final_mean_mae) = evaluate(test_loader, model, angle_head, device)
 
-    print('\n' + '='*46)
-    print(f'{"Joint":<16} | {"MAE (deg)":>9}')
-    print('-'*16 + '-+-' + '-'*9)
+    print('\n' + '=' * 36)
+    print(f'{"Joint":<14} | {"MAE (deg)":>9}')
+    print('-' * 14 + '-+-' + '-' * 9)
     for name, mae in zip(ROM_JOINT_NAMES, final_rom_mae):
-        print(f'{name:<16} | {mae:>9.1f}')
-    print('-'*16 + '-+-' + '-'*9)
-    print(f'{"Mean":<16} | {final_mean_mae:>9.1f}')
-    print('='*46)
+        print(f'{name:<14} | {mae:>9.2f}')
+    print('-' * 14 + '-+-' + '-' * 9)
+    print(f'{"Mean":<14} | {final_mean_mae:>9.2f}')
+    print('=' * 36)
     print(f'\nBest checkpoint: {best_ckpt}  (best MAE: {best_mae:.2f} deg)')
 
 

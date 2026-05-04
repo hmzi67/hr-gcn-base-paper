@@ -21,30 +21,52 @@ import numpy as np
 
 # ---------------------------------------------------------------------------
 # Vicon 39-joint → COCO body 23-joint mapping
-# Identified from mean 3D positions (z=height, y=anterior-posterior):
+# Verified from mean 3D positions and Y-axis convention:
+#   Y-axis: positive Y = patient's LEFT (confirmed via LASI idx 23 Y>0)
+#           negative Y = patient's RIGHT (confirmed via RASI idx 24 Y<0)
 #   Joints 23/24: hip LASI/RASI (z≈732 mm)
 #   Joints 25/26: hip LPSI/RPSI (z≈788 mm, posterior)
-#   Joints 27/33: knees (z≈480-607 mm)
+#   Joints 27/33: knee wands / 28/34: knee epicondyles (z≈480-607 mm)
 #   Joints 29/35: ankles (z≈309-316 mm)
 #   Joints 30-32 / 36-38: feet (z≈50-91 mm)
 #   Joints 0-3: head markers (z≈1300 mm)
-#   Joints 4: C7 / neck (z≈1194 mm)
-#   Joints 8/15: shoulders (z≈1142/1190 mm)
-#   Joints 10/17: elbows (z≈1209/1201 mm)
-#   Joints 12/19: wrists (z≈1368/1367 mm) — approximate
+#   Joint  4: C7 / neck (z≈1194 mm)
+#   Joints 8/9:  shoulders — idx 8=RSHO (Y<0, right), idx 9=LSHO (Y>0, left)
+#   Joints 11/17: elbows   — idx 11=LELB (Y>0, left), idx 17=RELB (Y<0, right)
+#   Joints 13/19: wrists   — idx 13=LWRA (Y>0, left), idx 19=RWRA (Y<0, right)
+#   (indices 10,12,16,18 are wand/intermediate markers — skipped)
 # ---------------------------------------------------------------------------
 VICON_TO_COCO_BODY = {
     # Vicon joint index : COCO body joint index (0-22)
+    #
+    # Y-axis convention confirmed from hip markers:
+    #   LASI (idx 23) Y>0  → positive Y = PATIENT'S LEFT
+    #   RASI (idx 24) Y<0  → negative Y = PATIENT'S RIGHT
+    #
+    # Arm marker layout (39-marker set):
+    #   idx  8: RSHO  (right shoulder, Y<0)
+    #   idx  9: LSHO  (left shoulder,  Y>0)
+    #   idx 10: LUPA  (left upper-arm wand — skipped)
+    #   idx 11: LELB  (left elbow,      Y>0)
+    #   idx 12: LFRM  (left forearm wand — skipped)
+    #   idx 13: LWRA  (left wrist,      Y>0)
+    #   idx 14: LWRB  (skipped)
+    #   idx 15: LFIN  (left finger — skipped)
+    #   idx 16: RUPA  (right upper-arm wand — skipped)
+    #   idx 17: RELB  (right elbow,     Y<0)
+    #   idx 18: RFRM  (right forearm wand — skipped)
+    #   idx 19: RWRA  (right wrist,     Y<0)
+    #
     # Head / face (approximate — head markers)
     0:  0,   # LFHD → nose proxy
-    # Shoulders
-    8:  5,   # LSHO → left shoulder
-    15: 6,   # RSHO → right shoulder
-    # Elbows
-    10: 7,   # LELB → left elbow
+    # Shoulders  (FIXED: was 8→LSHO, 15→RSHO — both wrong side/index)
+    9:  5,   # LSHO → left shoulder
+    8:  6,   # RSHO → right shoulder
+    # Elbows     (FIXED: left elbow was 10=LUPA, true LELB is 11)
+    11: 7,   # LELB → left elbow
     17: 8,   # RELB → right elbow
-    # Wrists
-    12: 9,   # LWRA → left wrist
+    # Wrists     (FIXED: left wrist was 12=LFRM, true LWRA is 13)
+    13: 9,   # LWRA → left wrist
     19: 10,  # RWRA → right wrist
     # Hips (ASIS — anterior superior iliac spine)
     23: 11,  # LASI → left hip
@@ -70,13 +92,13 @@ TRAIN_SUBJECTS = list(range(1, 9))   # s01-s08
 TEST_SUBJECTS  = [9, 10]             # s09-s10
 
 # ROM angle output order (must match JOINT_LIMIT_TENSOR_ORDER in anatomical_constraints.py)
-# cervical_yaw and cervical_roll removed: UI-PRMD has no cervical rotation/roll ground truth
-# (single-frame geometry cannot recover axial rotation without a reference orientation).
 ROM_NAMES = [
-    'cervical_pitch',
-    'trunk_flex',
+    'cervical_pitch', 'trunk_flex',
+    'left_shoulder_flex', 'right_shoulder_flex',
+    'left_shoulder_abd',  'right_shoulder_abd',
     'left_hip', 'right_hip',
     'left_knee', 'right_knee',
+    'left_ankle', 'right_ankle',
 ]
 
 
@@ -101,72 +123,113 @@ def _angle_at_vertex(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
 
 def compute_rom_angles(pos: np.ndarray) -> np.ndarray:
     """
-    Compute 6 clinical ROM angles per frame from Vicon 3D positions.
+    Compute 12 clinical ROM angles per frame from Vicon 3D positions.
 
-    pos: (T, 39, 3)  — Vicon joint positions in any consistent unit
-    returns: (T, 6)  — angles in degrees, order matches ROM_NAMES:
-        [cervical_pitch, trunk_flex, left_hip, right_hip, left_knee, right_knee]
+    pos: (T, 39, 3)  — Vicon joint positions in mm (Z-up)
+    returns: (T, 12) — degrees, order matches ROM_NAMES:
+        [cerv_pitch, trunk_flex,
+         l_sho_flex, r_sho_flex, l_sho_abd, r_sho_abd,
+         l_hip, r_hip, l_knee, r_knee, l_ankle, r_ankle]
 
-    Hip flexion: angle between global vertical (Vicon +Z) and the hip-to-knee
-    vector. Equivalent to "thigh deviation from upright" — symmetric by definition
-    across left and right sides for a standing subject. Using the measured spine
-    direction as reference instead introduced a systematic 20–30° L/R asymmetry
-    because the spine vector tilts toward one lateral side in this lab's coordinate
-    system.
+    Conventions (all clinical, 0° = anatomical neutral):
+      - Hip/knee: 0° upright/straight, increases with flexion
+      - Shoulder flex: 0° arm at side, increases as arm raises forward
+      - Shoulder abd:  0° arm at side, increases as arm raises sideways
+      - Ankle: 90° = neutral (tibia vertical), >90° = dorsiflexion, <90° = plantarflexion
 
-    Knee flexion: standard 3-point angle at the knee between femur and tibia.
-    Knee markers: indices 28 (LKNE) and 34 (RKNE) — the lateral knee epicondyle
-    markers at Z≈507mm. Indices 27/33 are thigh wands (LTHI/RTHI) at Z≈715mm
-    and must NOT be used here.
+    Vectorised — no Python loop.
     """
+    def _va(v1, v2):
+        """Batch angle (degrees) between (T,3) vectors."""
+        n1 = np.linalg.norm(v1, axis=-1, keepdims=True).clip(1e-8, None)
+        n2 = np.linalg.norm(v2, axis=-1, keepdims=True).clip(1e-8, None)
+        cos = ((v1 / n1) * (v2 / n2)).sum(-1).clip(-1.0 + 1e-7, 1.0 - 1e-7)
+        return np.degrees(np.arccos(cos))
+
     T = pos.shape[0]
-    angles = np.zeros((T, 6), dtype=np.float32)
 
-    # Anatomical landmarks
-    lasi  = pos[:, 23]   # left  hip ASIS
-    rasi  = pos[:, 24]   # right hip ASIS
-    lpsi  = pos[:, 25]   # left  hip PSIS
-    rpsi  = pos[:, 26]   # right hip PSIS
-    lkne  = pos[:, 28]   # left  knee (LKNE, lateral epicondyle, Z≈507mm)
-    rkne  = pos[:, 34]   # right knee (RKNE, lateral epicondyle, Z≈507mm)
-    lank  = pos[:, 29]   # left  ankle
-    rank  = pos[:, 35]   # right ankle
-    lsho  = pos[:,  8]   # left  shoulder (used for trunk flex only)
-    rsho  = pos[:, 15]   # right shoulder
-    head  = pos[:,  0]   # head proxy (LFHD)
-    c7    = pos[:,  4]   # C7 (cervical vertebra 7)
+    # Anatomical landmarks (Vicon indices)
+    lasi = pos[:, 23]   # left  hip ASIS
+    rasi = pos[:, 24]   # right hip ASIS
+    lpsi = pos[:, 25]   # left  hip PSIS
+    rpsi = pos[:, 26]   # right hip PSIS
+    lkne = pos[:, 28]   # left  knee (LKNE lateral epicondyle, Z≈507mm)
+    rkne = pos[:, 34]   # right knee
+    lank = pos[:, 29]   # left  ankle
+    rank = pos[:, 35]   # right ankle
+    lsho = pos[:,  9]   # left  shoulder (LSHO, Y>0)
+    rsho = pos[:,  8]   # right shoulder (RSHO, Y<0)
+    lelb = pos[:, 11]   # left  elbow    (LELB, Y>0)
+    relb = pos[:, 17]   # right elbow    (RELB, Y<0)
+    head = pos[:,  0]   # head proxy (LFHD)
+    c7   = pos[:,  4]   # C7 cervical vertebra
+    ltoe = pos[:, 30]   # left  big-toe proxy
+    rtoe = pos[:, 36]   # right big-toe proxy
+    lhee = pos[:, 32]   # left  heel proxy
+    rhee = pos[:, 38]   # right heel proxy
 
-    # Hip joint centres = average of ASIS and PSIS markers
     l_hip_ctr = (lasi + lpsi) / 2.0
     r_hip_ctr = (rasi + rpsi) / 2.0
     mid_hip   = (l_hip_ctr + r_hip_ctr) / 2.0
     mid_sho   = (lsho + rsho) / 2.0
+    spine     = mid_sho - mid_hip                       # (T,3) points upward
+    up        = np.zeros((T, 3), dtype=np.float32)
+    up[:, 2]  = 1.0                                     # Z-up in Vicon
 
-    up = np.array([0.0, 0.0, 1.0])   # global vertical (Z-up in Vicon)
+    # ── 0. Cervical pitch ────────────────────────────────────────────────────
+    cerv_pitch = _va(head - c7, up)
 
-    for t in range(T):
-        spine = mid_sho[t] - mid_hip[t]
+    # ── 1. Trunk flexion ─────────────────────────────────────────────────────
+    trunk_flex = _va(spine, up)
 
-        # --- Cervical pitch: angle between head-neck vector and vertical ---
-        neck_to_head = head[t] - c7[t]
-        angles[t, 0] = _angle_between(neck_to_head, up)
+    # ── 2-3. Shoulder flexion (0° arm at side, increases forward) ────────────
+    # 180 - angle(spine, upper_arm): spine points up, resting arm points down
+    # → antiparallel → 180° → 180-180=0° at rest ✓
+    l_upper_arm = lelb - lsho
+    r_upper_arm = relb - rsho
+    l_sho_flex  = 180.0 - _va(spine, l_upper_arm)
+    r_sho_flex  = 180.0 - _va(spine, r_upper_arm)
 
-        # --- Trunk flexion: angle between spine vector and vertical ---
-        angles[t, 1] = _angle_between(spine, up)
+    # ── 4-5. Shoulder abduction (frontal-plane projection) ───────────────────
+    # frontal_normal = forward direction = cross(lr_axis, up)
+    lr_axis        = rsho - lsho
+    frontal_normal = np.cross(lr_axis, up)
+    fn_norm        = np.linalg.norm(frontal_normal, axis=-1, keepdims=True).clip(1e-8, None)
+    frontal_normal = frontal_normal / fn_norm
+    # project upper arm onto frontal plane, then 180 - angle(up, proj)
+    l_proj = l_upper_arm - (l_upper_arm * frontal_normal).sum(-1, keepdims=True) * frontal_normal
+    r_proj = r_upper_arm - (r_upper_arm * frontal_normal).sum(-1, keepdims=True) * frontal_normal
+    l_sho_abd = 180.0 - _va(up, l_proj)
+    r_sho_abd = 180.0 - _va(up, r_proj)
 
-        # --- Hip flexion (clinical convention: 0° = upright, increases with flexion) ---
-        # _angle_between(up, femur) gives ~180° for upright (femur antiparallel to up).
-        # Clinical hip flexion = 180° minus that value → 0° upright, ~90° thigh horizontal.
-        angles[t, 2] = 180.0 - _angle_between(up, lkne[t] - l_hip_ctr[t])
-        angles[t, 3] = 180.0 - _angle_between(up, rkne[t] - r_hip_ctr[t])
+    # ── 6-7. Hip flexion (0° upright) ────────────────────────────────────────
+    l_femur = lkne - l_hip_ctr
+    r_femur = rkne - r_hip_ctr
+    l_hip   = 180.0 - _va(up, l_femur)
+    r_hip   = 180.0 - _va(up, r_femur)
 
-        # --- Knee flexion (clinical convention: 0° = straight, increases with bend) ---
-        # _angle_at_vertex gives ~180° for a straight leg.
-        # Clinical knee flexion = 180° minus that value.
-        angles[t, 4] = 180.0 - _angle_at_vertex(l_hip_ctr[t], lkne[t], lank[t])
-        angles[t, 5] = 180.0 - _angle_at_vertex(r_hip_ctr[t], rkne[t], rank[t])
+    # ── 8-9. Knee flexion (0° straight) ──────────────────────────────────────
+    l_tibia = lank - lkne
+    r_tibia = rank - rkne
+    l_knee  = 180.0 - _va(-l_femur, l_tibia)
+    r_knee  = 180.0 - _va(-r_femur, r_tibia)
 
-    return angles
+    # ── 10-11. Ankle dorsiflexion (90°=neutral, >90°=dorsiflex, <90°=plantarflex)
+    # Use heel→toe as foot long axis (horizontal at neutral) — NOT ankle→toe
+    # which points mostly downward and gives ~12° instead of ~90°.
+    l_foot  = ltoe - lhee   # heel→toe, roughly horizontal
+    r_foot  = rtoe - rhee
+    l_ankle = _va(l_tibia, l_foot)   # 90° at neutral, increases with dorsiflex
+    r_ankle = _va(r_tibia, r_foot)
+
+    return np.stack([
+        cerv_pitch, trunk_flex,
+        l_sho_flex, r_sho_flex,
+        l_sho_abd,  r_sho_abd,
+        l_hip,      r_hip,
+        l_knee,     r_knee,
+        l_ankle,    r_ankle,
+    ], axis=1).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
