@@ -30,7 +30,7 @@ import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from lib.config import cfg
@@ -175,14 +175,39 @@ def setup_logging(log_path: str):
 # Dataset
 # ---------------------------------------------------------------------------
 
-class UIRPMDDataset(TensorDataset):
-    """Thin wrapper around the NPZ format produced by prepare_data_uiprmd.py."""
-    def __init__(self, npz_path: str):
+class UIRPMDDataset(Dataset):
+    """UI-PRMD NPZ dataset with optional left-right mirror augmentation."""
+
+    _LEFT_JOINTS  = [5, 7, 9, 11, 13, 15]   # L shoulder,elbow,wrist,hip,knee,ankle
+    _RIGHT_JOINTS = [6, 8, 10, 12, 14, 16]  # R counterparts
+    _ANGLE_SWAPS  = [(2, 3), (4, 5), (6, 7), (8, 9), (10, 11)]  # (L_idx, R_idx)
+
+    def __init__(self, npz_path: str, p_mirror: float = 0.0):
         d = np.load(npz_path, allow_pickle=True)
-        poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
-        poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
-        rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 12)
-        super().__init__(poses_2d, poses_3d, rom_angles)
+        self.poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
+        self.poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
+        self.rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 12)
+        self.p_mirror   = p_mirror
+
+    def __len__(self):
+        return len(self.poses_2d)
+
+    def __getitem__(self, idx):
+        poses_2d   = self.poses_2d[idx].clone()    # (133, 2)
+        poses_3d   = self.poses_3d[idx].clone()    # (133, 3)
+        rom_angles = self.rom_angles[idx].clone()  # (12,)
+
+        if self.p_mirror > 0.0 and torch.rand(1).item() < self.p_mirror:
+            poses_2d[:, 0] *= -1
+
+            tmp = poses_3d[self._LEFT_JOINTS].clone()
+            poses_3d[self._LEFT_JOINTS]  = poses_3d[self._RIGHT_JOINTS]
+            poses_3d[self._RIGHT_JOINTS] = tmp
+
+            for li, ri in self._ANGLE_SWAPS:
+                rom_angles[[li, ri]] = rom_angles[[ri, li]]
+
+        return poses_2d, poses_3d, rom_angles
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +462,8 @@ def main():
 
     # ---- Data ----
     print('==> Loading UI-PRMD data...')
-    train_set = UIRPMDDataset(args.data_train)
-    test_set  = UIRPMDDataset(args.data_test)
+    train_set = UIRPMDDataset(args.data_train, p_mirror=0.5)
+    test_set  = UIRPMDDataset(args.data_test,  p_mirror=0.0)
     train_loader = DataLoader(train_set, batch_size=args.batch_size,
                               shuffle=True,  num_workers=args.num_workers,
                               pin_memory=True, drop_last=True)
