@@ -1,0 +1,18 @@
+Joint,MAE_deg
+Cervical Pitch,3.1331
+Trunk Flex,1.6753
+L Sho Flex,4.8367
+R Sho Flex,7.3282
+L Sho Abd,4.7524
+R Sho Abd,9.3425
+L Hip,2.5807
+R Hip,3.1268
+L Knee,3.8050
+R Knee,3.7747
+L Ankle,4.3638
+R Ankle,6.3499
+Mean,4.5891
+Body_MPJPE_mm,67.65
+Test_frames,49475
+Checkpoint,checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar
+Epoch,50
