@@ -979,3 +979,6 @@ python train_rehab.py --pretrained checkpoint/HRGCN/dc_preagg-2026-04-24T10:48:0
 
 
 python train_rehab.py --pretrained checkpoint/HRGCN/dc_preagg-2026-04-24T10:48:02/ckpt_best.pth.tar --cfg w32_adam_lr1e-3.yaml --epochs 100 --lr 5e-4 --batch_size 64  --backbone_lr_factor 0.5 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_v9
+
+
+  python train_rehab.py --pretrained checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar --cfg w32_adam_lr1e-3.yaml --epochs 60 --lr 1e-4 --batch_size 64 --backbone_lr_factor 0.1 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_v10

@@ -1,0 +1,14 @@
+Joint,MAE_deg,Clinical_pass
+Cervical Pitch,3.1331,PASS
+Trunk Flexion,1.6753,PASS
+L Shoulder Flex,4.8367,PASS
+R Shoulder Flex,7.3282,FAIL
+L Shoulder Abd,4.7524,PASS
+R Shoulder Abd,9.3425,FAIL
+L Hip,2.5807,PASS
+R Hip,3.1268,PASS
+L Knee,3.8050,PASS
+R Knee,3.7747,PASS
+L Ankle,4.3638,PASS
+R Ankle,6.3499,FAIL
+Mean,4.5891,9/12
