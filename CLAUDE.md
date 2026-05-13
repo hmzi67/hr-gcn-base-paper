@@ -118,9 +118,7 @@ Extends HR-GCN for clinical rehabilitation assessment on the UI-PRMD dataset.
 
 ```bash
 # Step 1: preprocess UI-PRMD (data/UI-PRMD/raw/ must contain Vicon .txt files)
-python utils/prepare_data_uiprmd.py \
-  --data_dir data/UI-PRMD/raw \
-  --output_dir data/
+python utils/prepare_data_uiprmd.py  --data_dir data/UI-PRMD/raw --output_dir data/
 
 # Step 2: fine-tune on UI-PRMD (full novel loss)
 python train_rehab.py \

@@ -262,3 +262,8 @@ python infer.py --evaluate checkpoint_58.4/ckpt_best.pth.tar -cfg checkpoint_58.
 
 (venv) genesys@genesys-MS-7B05:~/hamza/HR-GCN % python train_rehab.py --pretrained checkpoint/HRGCN/dc_preagg-2026-04-24T10:48:02/ckpt_best.pth.tar --cfg w32_adam_lr1e-3.yaml --epochs 50 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_v4
 ==> Log file: checkpoint_rehab_baseline_v4/train_rehab.log
+
+
+
+
+python train_rehab.py --cfg checkpoint\w32_adam_lr1e-3.yaml --gcn dc_preagg --model 1 --from_scratch --epochs 100 --lr 5e-4 --backbone_lr_factor 1.0 --batch_size 512 --warmup_epochs 3 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_scratch
