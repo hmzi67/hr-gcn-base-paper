@@ -160,7 +160,7 @@ def main():
     angle_head = build_angle_head(in_features=69, hidden=hidden,
                                   n_joints=n_joints).to(device)
 
-    model.load_state_dict(ckpt['state_dict'])
+    model.load_state_dict(ckpt['state_dict'], strict=False)
     angle_head.load_state_dict(angle_state)
 
     print(f'==> Loading test data: {args.data_test}')

@@ -1,0 +1,68 @@
+======================================================================
+DATA BALANCE REPORT — uiprmd_train.npz
+======================================================================
+Total frames: 204194
+
+--- FRAMES PER EXERCISE ---
+  E1 (Deep Squat                              ) : 22657 frames [LOWER/TRUNK]
+  E2 (Hurdle Step                             ) : 19677 frames [LOWER/TRUNK]
+  E3 (Inline Lunge                            ) : 19106 frames [LOWER/TRUNK]
+  E4 (Side Lunge                              ) : 23403 frames [LOWER/TRUNK]
+  E5 (Sit to Stand                            ) : 24588 frames [LOWER/TRUNK]
+  E6 (Standing Active Straight Leg Raise      ) : 18076 frames [LOWER/TRUNK]
+  E7 (Standing Shoulder Abduction             ) : 21211 frames [SHOULDER]
+  E8 (Shoulder Extension                      ) : 18576 frames [SHOULDER]
+  E9 (Standing Shoulder Internal Rotation     ) : 19504 frames [SHOULDER]
+  E10 (Standing Shoulder External Rotation     ) : 17396 frames [SHOULDER]
+
+  Shoulder exercises  (E7-E10): 76687 frames  (37.6%)
+  Lower/Trunk exs (E1-E6): 127507 frames  (62.4%)
+  Ratio shoulder/lower:  0.601
+
+--- FRAMES PER SUBJECT ---
+  Subject 01 (S01): 24061 frames
+  Subject 02 (S02): 25886 frames
+  Subject 03 (S03): 27978 frames
+  Subject 04 (S04): 24374 frames
+  Subject 05 (S05): 27065 frames
+  Subject 06 (S06): 23844 frames
+  Subject 07 (S07): 30233 frames
+  Subject 08 (S08): 20753 frames
+
+  (Train subjects: [np.int32(1), np.int32(2), np.int32(3), np.int32(4), np.int32(5), np.int32(6), np.int32(7), np.int32(8)])
+  (Test subjects: S9, S10 — 0-indexed: 8, 9)
+
+--- L vs R SHOULDER ANGLE STATISTICS (train) ---
+  L Sho Abd  — mean=56.33°  std=39.19°  min=0.03°  max=142.37°
+  R Sho Abd  — mean=104.18°  std=36.09°  min=21.77°  max=179.97°
+  L Sho Flex — mean=61.90°  std=36.27°  min=10.32°  max=138.27°
+  R Sho Flex — mean=99.40°  std=29.98°  min=40.16°  max=169.75°
+
+  E7 (Standing Shoulder Abduction):
+    L Sho Abd  mean=20.11°  std=25.48°
+    R Sho Abd  mean=101.81°  std=48.95°
+    |L-R| mean diff = 81.70° <-- ASYMMETRY
+  E8 (Shoulder Extension):
+    L Sho Abd  mean=12.67°  std=3.63°
+    R Sho Abd  mean=55.67°  std=18.73°
+    |L-R| mean diff = 43.00° <-- ASYMMETRY
+  E9 (Standing Shoulder Internal Rotation):
+    L Sho Abd  mean=22.36°  std=21.55°
+    R Sho Abd  mean=115.78°  std=24.99°
+    |L-R| mean diff = 93.42° <-- ASYMMETRY
+  E10 (Standing Shoulder External Rotation):
+    L Sho Abd  mean=16.74°  std=13.13°
+    R Sho Abd  mean=78.80°  std=39.72°
+    |L-R| mean diff = 62.06° <-- ASYMMETRY
+
+--- ANNOTATION QUALITY ---
+  NaN values in rom_angles: 0
+  Frames where ALL angles ≈ 0: 0
+
+
+--- IMBALANCE SUMMARY ---
+  UNDERREPRESENTED: shoulder exercises have 50820 fewer frames than lower body.
+  This contributes to higher shoulder angle errors.
+  R Sho Abd mean (104.2°) vs L Sho Abd mean (56.3°): R > L
+  Right shoulder has LARGER mean abduction angle — harder to regress.
+======================================================================

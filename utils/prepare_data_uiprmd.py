@@ -6,6 +6,10 @@ Reads Vicon .txt position files, maps 39 Vicon joints to COCO-WholeBody
 via orthographic projection, computes 8 clinical ROM angles geometrically,
 and saves train/test NPZ files compatible with the existing H3WB data pipeline.
 
+Quality scores are loaded from Scores/m{ex:02d}_s{sub:02d}_scores.txt if
+present. Otherwise they are derived from the Incorrect Movements folder
+(correct=1.0, incorrect=0.0). Missing files fall back to -1.0 (sentinel).
+
 Usage:
     python utils/prepare_data_uiprmd.py \
         --data_dir data/UI-PRMD/raw \
@@ -292,6 +296,52 @@ def normalize_3d(poses_3d: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Quality score helpers
+# ---------------------------------------------------------------------------
+
+def load_quality_score(scores_dir: str, exercise_id: int, subject_id: int) -> float:
+    """
+    Load a per-sequence quality score scalar from the Scores directory.
+
+    UI-PRMD Scores files (when present) contain a single float per sequence.
+    Returns -1.0 (sentinel) if the file does not exist.
+
+    exercise_id: 0-indexed  → filename uses 1-indexed (exercise_id+1)
+    subject_id:  1-indexed  (matches filename)
+    """
+    fname = f'm{exercise_id + 1:02d}_s{subject_id:02d}_scores.txt'
+    fpath = os.path.join(scores_dir, fname)
+    if not os.path.isfile(fpath):
+        return -1.0
+    try:
+        val = float(np.loadtxt(fpath).flat[0])
+        return float(np.clip(val, 0.0, 1.0))
+    except Exception:
+        return -1.0
+
+
+def derive_quality_from_incorrect(data_dir: str, exercise_id: int, subject_id: int) -> float:
+    """
+    Derive binary quality score from the Incorrect Movements folder.
+
+    Returns 1.0 if the subject/exercise exists ONLY in Movements/ (correct),
+    0.0  if a matching file also exists in 'Incorrect Movements/Vicon/Positions/'.
+    Falls back to -1.0 if no Incorrect Movements folder is found at all.
+
+    exercise_id: 0-indexed
+    subject_id:  1-indexed
+    """
+    incorrect_dir = os.path.join(
+        data_dir, 'Incorrect Movements', 'Vicon', 'Positions'
+    )
+    if not os.path.isdir(incorrect_dir):
+        return -1.0
+    fname = f'm{exercise_id + 1:02d}_s{subject_id:02d}_positions.txt'
+    # If an incorrect version exists → quality 0.0; correct-only → 1.0
+    return 0.0 if os.path.isfile(os.path.join(incorrect_dir, fname)) else 1.0
+
+
+# ---------------------------------------------------------------------------
 # Per-file loader
 # ---------------------------------------------------------------------------
 
@@ -329,6 +379,7 @@ def load_vicon_file(pos_path: str):
 
 def preprocess(data_dir: str, output_dir: str):
     vicon_pos_dir = os.path.join(data_dir, 'Movements', 'Vicon', 'Positions')
+    scores_dir    = os.path.join(data_dir, 'Movements', 'Vicon', 'Scores')
     files = sorted(glob.glob(os.path.join(vicon_pos_dir, 'm??_s??_positions.txt')))
 
     if not files:
@@ -337,7 +388,12 @@ def preprocess(data_dir: str, output_dir: str):
             'Make sure Vicon/Positions/ contains m??_s??_positions.txt files.'
         )
 
+    has_scores_dir = os.path.isdir(scores_dir)
     print(f'Found {len(files)} Vicon position files.')
+    if has_scores_dir:
+        print(f'Quality scores: loading from {scores_dir}')
+    else:
+        print('Quality scores: Scores/ dir not found — deriving from Incorrect Movements/ (1.0=correct, 0.0=incorrect, -1.0=unknown)')
 
     splits = {'train': [], 'test': []}
 
@@ -352,15 +408,23 @@ def preprocess(data_dir: str, output_dir: str):
         print(f'  [{split}] {base}', end='  ', flush=True)
         poses_3d, poses_2d, rom_angles = load_vicon_file(fpath)
         T = poses_3d.shape[0]
-        print(f'T={T}')
+
+        # Quality score: try Scores/ dir first, fall back to Incorrect Movements
+        if has_scores_dir:
+            q_score = load_quality_score(scores_dir, exercise_id, subject_id)
+        else:
+            q_score = derive_quality_from_incorrect(data_dir, exercise_id, subject_id)
+
+        print(f'T={T}  quality={q_score:.3f}')
 
         splits[split].append({
-            'poses_3d':    poses_3d,
-            'poses_2d':    poses_2d,
-            'rom_angles':  rom_angles,
-            'subject_ids': np.full(T, subject_id - 1, dtype=np.int32),   # 0-indexed
-            'exercise_ids': np.full(T, exercise_id,   dtype=np.int32),
-            'frame_ids':   np.arange(T, dtype=np.int32),
+            'poses_3d':      poses_3d,
+            'poses_2d':      poses_2d,
+            'rom_angles':    rom_angles,
+            'subject_ids':   np.full(T, subject_id - 1, dtype=np.int32),   # 0-indexed
+            'exercise_ids':  np.full(T, exercise_id,    dtype=np.int32),
+            'frame_ids':     np.arange(T, dtype=np.int32),
+            'quality_scores': np.full(T, q_score,       dtype=np.float32),
         })
 
     os.makedirs(output_dir, exist_ok=True)
@@ -370,12 +434,13 @@ def preprocess(data_dir: str, output_dir: str):
             print(f'WARNING: no samples for split "{split_name}"')
             continue
 
-        all_3d  = np.concatenate([s['poses_3d']    for s in samples], axis=0)
-        all_2d  = np.concatenate([s['poses_2d']    for s in samples], axis=0)
-        all_rom = np.concatenate([s['rom_angles']  for s in samples], axis=0)
-        all_sub = np.concatenate([s['subject_ids'] for s in samples], axis=0)
-        all_exc = np.concatenate([s['exercise_ids']for s in samples], axis=0)
-        all_frm = np.concatenate([s['frame_ids']   for s in samples], axis=0)
+        all_3d  = np.concatenate([s['poses_3d']       for s in samples], axis=0)
+        all_2d  = np.concatenate([s['poses_2d']       for s in samples], axis=0)
+        all_rom = np.concatenate([s['rom_angles']     for s in samples], axis=0)
+        all_sub = np.concatenate([s['subject_ids']    for s in samples], axis=0)
+        all_exc = np.concatenate([s['exercise_ids']   for s in samples], axis=0)
+        all_frm = np.concatenate([s['frame_ids']      for s in samples], axis=0)
+        all_qsc = np.concatenate([s['quality_scores'] for s in samples], axis=0)
 
         # Normalize after concatenation for consistent statistics
         all_3d_norm = normalize_3d(all_3d)
@@ -384,19 +449,24 @@ def preprocess(data_dir: str, output_dir: str):
         out_path = os.path.join(output_dir, f'uiprmd_{split_name}.npz')
         np.savez_compressed(
             out_path,
-            poses_2d    = all_2d_norm,
-            poses_3d    = all_3d_norm,
-            rom_angles  = all_rom,
-            subject_ids = all_sub,
-            exercise_ids= all_exc,
-            frame_ids   = all_frm,
+            poses_2d      = all_2d_norm,
+            poses_3d      = all_3d_norm,
+            rom_angles    = all_rom,
+            subject_ids   = all_sub,
+            exercise_ids  = all_exc,
+            frame_ids     = all_frm,
+            quality_scores= all_qsc,
         )
+        n_valid = int((all_qsc >= 0).sum())
         print(f'\nSaved {split_name}: {out_path}')
-        print(f'  poses_2d:    {all_2d_norm.shape}')
-        print(f'  poses_3d:    {all_3d_norm.shape}')
-        print(f'  rom_angles:  {all_rom.shape}')
-        print(f'  subject_ids: {all_sub.shape}  unique={np.unique(all_sub)}')
-        print(f'  exercise_ids:{all_exc.shape}  unique={np.unique(all_exc)}')
+        print(f'  poses_2d:      {all_2d_norm.shape}')
+        print(f'  poses_3d:      {all_3d_norm.shape}')
+        print(f'  rom_angles:    {all_rom.shape}')
+        print(f'  subject_ids:   {all_sub.shape}  unique={np.unique(all_sub)}')
+        print(f'  exercise_ids:  {all_exc.shape}  unique={np.unique(all_exc)}')
+        print(f'  quality_scores:{all_qsc.shape}  valid={n_valid}/{len(all_qsc)}  '
+              f'mean(valid)={all_qsc[all_qsc >= 0].mean():.3f}' if n_valid else
+              f'  quality_scores:{all_qsc.shape}  valid=0/{len(all_qsc)}')
 
 
 # ---------------------------------------------------------------------------

@@ -110,33 +110,71 @@ Extends HR-GCN for clinical rehabilitation assessment on the UI-PRMD dataset.
 | `common/clinical_loss.py` | Clinical angle supervision loss — Novel #2 |
 | `common/one_euro_filter.py` | Temporal smoothing for real-time inference |
 | `common/visualize.py` | Skeleton + ROM angle overlay on video frames |
-| `models/clinical_angle_head.py` | ROM angle regression MLP head |
-| `train_rehab.py` | Fine-tuning pipeline on UI-PRMD |
+| `models/clinical_angle_head.py` | ROM angle regression MLP head (`ClinicalAngleHead` + `QualityScoreHead`) |
+| `train_rehab.py` | Training/fine-tuning pipeline on UI-PRMD |
 | `infer_rehab.py` | Real-time end-to-end inference pipeline |
+| `evaluate_rehab.py` | Standalone eval: body MPJPE + per-joint ROM MAE from a checkpoint |
+| `evaluate_comparison.py` | Comparison eval vs. Physio2.2M / OpenCap; outputs CSV, LaTeX, figures |
+| `eval_baseline_v8_by_exercise.py` | Per-exercise MAE table matching thesis TABLE I format |
+| `train_rehab_optimized.sh` | One-command script with recommended hyperparameters |
 
 ### New Commands
 
 ```bash
 # Step 1: preprocess UI-PRMD (data/UI-PRMD/raw/ must contain Vicon .txt files)
-python utils/prepare_data_uiprmd.py  --data_dir data/UI-PRMD/raw --output_dir data/
+python utils/prepare_data_uiprmd.py --data_dir data/UI-PRMD/raw --output_dir data/
 
-# Step 2: fine-tune on UI-PRMD (full novel loss)
+# Step 2a: RECOMMENDED — from-scratch training (best for H3WB→Vicon domain shift)
+./train_rehab_optimized.sh
+# or manually:
+python train_rehab.py \
+  --from_scratch \
+  --lr 5e-4 \
+  --batch_size 64 \
+  --backbone_lr_factor 1.0 \
+  --warmup_epochs 3 \
+  --progressive_weights \
+  --epochs 50 \
+  --checkpoint checkpoint_rehab_v3
+
+# Step 2b: Fine-tune from H3WB checkpoint (if pretrained backbone is validated)
 python train_rehab.py \
   --pretrained checkpoint/ckpt_best.pth.tar \
-  --cfg w32_adam_lr1e-3.yaml \
-  --epochs 50 \
-  --lambda_angle 0.1 \
-  --lambda_constraint 0.05
+  --lr 1e-4 \
+  --batch_size 64 \
+  --backbone_lr_factor 0.5 \
+  --warmup_epochs 5 \
+  --progressive_weights \
+  --epochs 50
 
-# Baseline (position loss only, no novel contributions):
+# Step 2c: Baseline (position loss only, no novel contributions)
 python train_rehab.py \
-  --pretrained checkpoint/ckpt_best.pth.tar \
-  --cfg w32_adam_lr1e-3.yaml \
-  --epochs 50 \
+  --from_scratch \
   --lambda_angle 0.0 \
-  --lambda_constraint 0.0
+  --lambda_constraint 0.0 \
+  --epochs 50
 
-# Step 3: real-time inference with RTMPose 2D detector
+# Step 3: Evaluate a checkpoint
+python evaluate_rehab.py \
+  --checkpoint checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar \
+  --cfg w32_adam_lr1e-3.yaml \
+  --data_test data/uiprmd_test.npz
+
+# Per-exercise breakdown (thesis TABLE I format)
+python eval_baseline_v8_by_exercise.py \
+  --checkpoint checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar \
+  --cfg w32_adam_lr1e-3.yaml \
+  --data_test data/uiprmd_test.npz \
+  --save_csv results/per_exercise.csv
+
+# Comparison vs. literature baselines (generates CSV, LaTeX, figures)
+python evaluate_comparison.py \
+  --checkpoint checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar \
+  --cfg w32_adam_lr1e-3.yaml \
+  --data_test data/uiprmd_test.npz \
+  --output_dir results_comparison/
+
+# Step 4: real-time inference with RTMPose 2D detector
 python infer_rehab.py \
   --source 0 \
   --checkpoint checkpoint_rehab/ckpt_best_rehab.pth.tar \
@@ -151,6 +189,20 @@ python infer_rehab.py \
   --cfg w32_adam_lr1e-3.yaml \
   --skip_pose_detector
 ```
+
+**Key `train_rehab.py` flags** (updated defaults vs. earlier versions):
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--from_scratch` | off | Skip pretrained; recommended for Vicon data |
+| `--lr` | `5e-4` | Use `1e-4` when fine-tuning from H3WB |
+| `--batch_size` | `64` | Smaller batches improve convergence |
+| `--backbone_lr_factor` | `0.5` | Set `1.0` when training from scratch |
+| `--warmup_epochs` | `3` | Was hardcoded 11 in earlier versions |
+| `--progressive_weights` | off | Ramps λ_angle/λ_constraint from 0.1× → 1.0× |
+| `--lambda_angle` | `0.01` | Was `0.1` in earlier versions |
+| `--lambda_constraint` | `0.01` | Was `0.05` in earlier versions |
+| `--train_quality_head` | off | Enable `QualityScoreHead` regression |
 
 ### UI-PRMD Dataset Format
 
@@ -191,8 +243,9 @@ Shoulder flex/abd: 0°=arm at side, increases as arm rises.
 
 **Thesis experiment**:
 - Run baseline (`--lambda_angle 0.0 --lambda_constraint 0.0`) → record Mean ROM MAE
-- Run full GCADA (`--lambda_angle 0.1 --lambda_constraint 0.05`) → record Mean ROM MAE
+- Run full GCADA (defaults: `--lambda_angle 0.01 --lambda_constraint 0.01 --progressive_weights`) → record Mean ROM MAE
 - Improvement in Mean ROM MAE (degrees) is the primary thesis result
+- Use `evaluate_rehab.py` or `eval_baseline_v8_by_exercise.py` to extract the numbers
 
 ### Rehab Checkpoint Format
 
@@ -222,7 +275,7 @@ torch.load('checkpoint_rehab/ckpt_best_rehab.pth.tar') == {
 **Testing & Validation**:
 - No dedicated test suite; validate changes with focused smoke runs
 - H3WB smoke: `python HRNet_GCN_WB.py --gcn dc_preagg --model 1 --epochs 1`
-- Rehab smoke: `python train_rehab.py --pretrained <ckpt> --cfg w32_adam_lr1e-3.yaml --epochs 1 --batch_size 16 --freeze_backbone`
+- Rehab smoke: `python train_rehab.py --from_scratch --epochs 1 --batch_size 16`
 
 **File Organization**:
 - Core models: `models/graph_*.py`

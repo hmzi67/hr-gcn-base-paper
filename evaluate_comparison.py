@@ -621,7 +621,7 @@ def main():
     model      = build_backbone(args, cfg, adj, device)
     angle_head = _AngleHead(in_features=69, hidden=hidden,
                             n_joints=n_joints).to(device)
-    model.load_state_dict(ckpt['state_dict'])
+    model.load_state_dict(ckpt['state_dict'], strict=False)
     angle_head.load_state_dict(angle_state)
 
     # ── load data ────────────────────────────────────────────────────────────

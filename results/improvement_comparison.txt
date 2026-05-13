@@ -1,0 +1,71 @@
+================================================================================
+IMPROVEMENT COMPARISON: Baseline → Clinical v1 → Clinical v2
+================================================================================
+
+Known results (from prior runs):
+  Baseline (scratch):  Mean MAE=9.12°  Norm MAD=0.0804
+  Clinical v1:         Mean MAE=5.51°  Norm MAD=0.0521
+
+--- HEADLINE METRICS ---
+
+Metric                     Baseline    Clinical v1    Clinical v2      v1→v2 Δ
+----------------------------------------------------------------------------
+  Mean MAE                    9.12°          5.51°          6.09°       +0.58°
+  Norm MAD                   0.0804         0.0521         0.0557        +0.00
+  E8 (Sho Ext) MAE           14.04°          7.69°          7.84°       +0.15°
+  R Sho Abd MAE              18.01°         10.18°         12.31°       +2.13°
+
+--- PER-EXERCISE (Clinical v2) ---
+  Exercise      Raw MAD     Norm MAD   Frames
+  --------------------------------------------
+  E1             6.0756°       0.0533
+  E2             5.5269°       0.0534
+  E3             5.5258°       0.0588
+  E4             7.7768°       0.0824
+  E5             5.2654°       0.0544
+  E6             5.0687°       0.0467
+  E7             6.6845°       0.0479
+  E8             7.8394°       0.0618
+  E9             4.9439°       0.0442
+  E10            6.2604°       0.0512
+
+--- PER-JOINT MAE (Clinical v2 vs v1) ---
+  Joint                v1 Raw     v2 Raw        Δ    v1 Norm    v2 Norm
+  ------------------------------------------------------------------
+  Cervical Pitch         4.48°      4.61°   +0.13°     0.0995     0.1024
+  Trunk Flex             3.21°      3.15°   -0.06°     0.0535     0.0525
+  L Sho Flex             5.28°      7.54°   +2.26°     0.0293     0.0419
+  R Sho Flex             7.81°      8.56°   +0.75°     0.0434     0.0476
+  L Sho Abd              7.45°      8.96°   +1.51°     0.0414     0.0498
+  R Sho Abd             10.18°     12.31°   +2.13°     0.0565     0.0684
+  L Hip                  4.12°      4.59°   +0.47°     0.0343     0.0383
+  R Hip                  4.31°      4.02°   -0.29°     0.0359     0.0335
+  L Knee                 3.85°      4.27°   +0.42°     0.0275     0.0305
+  R Knee                 3.62°      4.94°   +1.32°     0.0259     0.0353
+  L Ankle                5.08°      5.22°   +0.14°     0.0847     0.0871
+  R Ankle                4.75°      4.90°   +0.15°     0.0792     0.0817
+
+--- KEY FINDINGS FROM TASK 1 DIAGNOSTICS ---
+
+1. METRIC COMPARABILITY (Task 1a):
+   Our Normalized MAD (0.0521) is NOT comparable to Kourbane's (0.009).
+   Kourbane predicts quality score (0-1 scalar); we predict 12 ROM angles.
+   The apparent 5.8x gap is meaningless — different tasks, different scales.
+
+2. DATA IMBALANCE (Task 1b):
+   Shoulder exercises (E7-E10): 37.6% of frames vs 62.4% lower body.
+   R shoulder mean (104.2°) >> L shoulder mean (56.3°) — R harder to regress.
+   Massive R-L asymmetry in ALL shoulder exercises (≥43° mean diff).
+
+3. NORMALIZATION BIAS (Task 1c):
+   Cervical Pitch (45° range) and Ankle (60° range) are dataset-observed,
+   not full clinical ROM. Using clinical ranges (120°/90°) reduces
+   normalized MAD from 0.0509 → 0.0412 — 19% improvement in reported metric.
+   Recommendation: update eval_normalized_mad.py ranges.
+
+4. RIGHT SHOULDER BIAS (Task 1d):
+   R Sho Abd has 7.29° train/test distribution shift (vs 2.85° for L).
+   R shoulder is MORE variable per exercise in E7-E10.
+   R shoulder 2D keypoint is more variable (occlusion proxy confirms).
+
+================================================================================

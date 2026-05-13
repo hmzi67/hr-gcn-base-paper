@@ -149,6 +149,12 @@ def parse_args():
                         help='Enable quality score regression head (requires quality_scores key in NPZ)')
     parser.add_argument('--lambda_quality', default=0.1, type=float,
                         help='Weight for quality score MSE loss when --train_quality_head is set')
+    parser.add_argument('--use_joint_weights', action='store_true',
+                        help='Apply per-joint loss weights: R_sho_abd=3.0, R_sho_flex=2.5, L_sho_abd=2.0')
+    parser.add_argument('--use_exercise_weights', action='store_true',
+                        help='Apply exercise-specific angle loss multipliers (E4, E7, E8, E10)')
+    parser.add_argument('--shoulder_augmentation', action='store_true',
+                        help='Apply random vertical-axis rotation ±20° to shoulder exercises (E7-E10)')
 
     return parser.parse_args()
 
@@ -180,19 +186,23 @@ def setup_logging(log_path: str):
 # ---------------------------------------------------------------------------
 
 class UIRPMDDataset(Dataset):
-    """UI-PRMD NPZ dataset with optional left-right mirror augmentation."""
+    """UI-PRMD NPZ dataset with optional mirror and shoulder rotation augmentation."""
 
     _LEFT_JOINTS  = [5, 7, 9, 11, 13, 15]   # L shoulder,elbow,wrist,hip,knee,ankle
     _RIGHT_JOINTS = [6, 8, 10, 12, 14, 16]  # R counterparts
     _ANGLE_SWAPS  = [(2, 3), (4, 5), (6, 7), (8, 9), (10, 11)]  # (L_idx, R_idx)
+    _SHOULDER_EXERCISES = {6, 7, 8, 9}       # E7-E10 (0-indexed)
 
     def __init__(self, npz_path: str, p_mirror: float = 0.0,
-                 require_quality: bool = False):
+                 require_quality: bool = False,
+                 shoulder_augmentation: bool = False):
         d = np.load(npz_path, allow_pickle=True)
-        self.poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
-        self.poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
-        self.rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 12)
-        self.p_mirror   = p_mirror
+        self.poses_2d    = torch.from_numpy(d['poses_2d']).float()     # (N, 133, 2)
+        self.poses_3d    = torch.from_numpy(d['poses_3d']).float()     # (N, 133, 3)
+        self.rom_angles  = torch.from_numpy(d['rom_angles']).float()   # (N, 12)
+        self.exercise_ids = torch.from_numpy(d['exercise_ids']).long() # (N,)
+        self.p_mirror    = p_mirror
+        self.shoulder_augmentation = shoulder_augmentation
 
         if 'quality_scores' in d:
             self.quality_scores = torch.from_numpy(
@@ -211,12 +221,13 @@ class UIRPMDDataset(Dataset):
         return len(self.poses_2d)
 
     def __getitem__(self, idx):
-        poses_2d   = self.poses_2d[idx].clone()    # (133, 2)
-        poses_3d   = self.poses_3d[idx].clone()    # (133, 3)
-        rom_angles = self.rom_angles[idx].clone()  # (12,)
-        quality    = (self.quality_scores[idx].clone()
-                      if self.quality_scores is not None
-                      else torch.tensor(-1.0))     # sentinel when unavailable
+        poses_2d    = self.poses_2d[idx].clone()       # (133, 2)
+        poses_3d    = self.poses_3d[idx].clone()       # (133, 3)
+        rom_angles  = self.rom_angles[idx].clone()     # (12,)
+        exercise_id = self.exercise_ids[idx]           # scalar tensor
+        quality     = (self.quality_scores[idx].clone()
+                       if self.quality_scores is not None
+                       else torch.tensor(-1.0))        # sentinel when unavailable
 
         if self.p_mirror > 0.0 and torch.rand(1).item() < self.p_mirror:
             poses_2d[:, 0] *= -1
@@ -228,7 +239,31 @@ class UIRPMDDataset(Dataset):
             for li, ri in self._ANGLE_SWAPS:
                 rom_angles[[li, ri]] = rom_angles[[ri, li]]
 
-        return poses_2d, poses_3d, rom_angles, quality
+        # Shoulder rotation augmentation: random vertical-axis rotation ±20°
+        # Applied only to E7-E10 (shoulder exercises). ROM angles are preserved
+        # under this rotation since angles are body-relative, not world-relative.
+        # 2D is updated consistently: new_x = old_x*cos - depth*sin (ortho proj).
+        if (self.shoulder_augmentation
+                and int(exercise_id.item()) in self._SHOULDER_EXERCISES):
+            angle_deg = torch.empty(1).uniform_(-20.0, 20.0).item()
+            angle_rad = angle_deg * (3.14159265358979 / 180.0)
+            cos_a = float(np.cos(angle_rad))
+            sin_a = float(np.sin(angle_rad))
+
+            # mask: only rotate mapped joints (non-zero in 3D)
+            mapped = (poses_3d.abs().sum(dim=-1) > 1e-8)  # (133,)
+
+            x = poses_3d[:, 0].clone()
+            y = poses_3d[:, 1].clone()   # depth axis (Vicon Y)
+            new_x = x * cos_a - y * sin_a
+            new_y = x * sin_a + y * cos_a
+            poses_3d[:, 0] = torch.where(mapped, new_x, poses_3d[:, 0])
+            poses_3d[:, 1] = torch.where(mapped, new_y, poses_3d[:, 1])
+
+            # Update 2D x accordingly (orthographic: x_2d == 3D x, same scale)
+            poses_2d[:, 0] = torch.where(mapped, poses_3d[:, 0], poses_2d[:, 0])
+
+        return poses_2d, poses_3d, rom_angles, quality, exercise_id
 
 
 # ---------------------------------------------------------------------------
@@ -280,11 +315,12 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
     pbar = tqdm(loader, desc=f'Ep{epoch+1:3d}/{total_epochs}',
                 ncols=100, leave=False, file=sys.stdout)
 
-    for i, (inputs_2d, targets_3d, target_angles, target_quality) in enumerate(pbar):
+    for i, (inputs_2d, targets_3d, target_angles, target_quality, ex_ids) in enumerate(pbar):
         inputs_2d      = inputs_2d.to(device)
         targets_3d     = targets_3d.to(device)
         target_angles  = target_angles.to(device)
         target_quality = target_quality.to(device)   # (B,)
+        ex_ids         = ex_ids.to(device)           # (B,) int64
 
         body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
 
@@ -302,6 +338,7 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
             targets_3d[:, 112:],
             pred_angles,
             target_angles,
+            exercise_ids=ex_ids,
         )
 
         if baseline_mode:
@@ -361,7 +398,7 @@ def evaluate(loader, model, angle_head, device):
     n_samples              = 0
 
     with torch.no_grad():
-        for inputs_2d, targets_3d, target_angles, _quality in loader:
+        for inputs_2d, targets_3d, target_angles, _quality, _ex_ids in loader:
             inputs_2d     = inputs_2d.to(device)
             targets_3d    = targets_3d.to(device)
             target_angles = target_angles.to(device)
@@ -509,6 +546,8 @@ def main():
     criterion = ClinicalPoseLoss(
         lambda_angle=args.lambda_angle,
         lambda_constraint=args.lambda_constraint,
+        use_joint_weights=args.use_joint_weights,
+        use_exercise_weights=args.use_exercise_weights,
     ).to(device)
     if args.progressive_weights:
         print('==> Progressive weighting enabled: 0.1x → 0.5x → 1.0x over training')
@@ -516,7 +555,8 @@ def main():
     # ---- Data ----
     print('==> Loading UI-PRMD data...')
     train_set = UIRPMDDataset(args.data_train, p_mirror=0.5,
-                              require_quality=args.train_quality_head)
+                              require_quality=args.train_quality_head,
+                              shoulder_augmentation=args.shoulder_augmentation)
     test_set  = UIRPMDDataset(args.data_test,  p_mirror=0.0,
                               require_quality=False)
     train_loader = DataLoader(train_set, batch_size=args.batch_size,

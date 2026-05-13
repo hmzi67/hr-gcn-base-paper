@@ -1,0 +1,71 @@
+================================================================================
+NORMALIZATION RANGE ANALYSIS
+================================================================================
+
+The normalized metric = |error| / range
+A SMALL range means even small errors look large (amplification effect).
+
+--- PER-JOINT RANGE COMPARISON ---
+Joint                 Actual Data Rng Current Norm Rng   Clinical Rng   Amplifies?
+--------------------------------------------------------------------------------
+  Cervical Pitch                 69.8°             45.0°          120.0°          YES
+  Trunk Flex                     43.4°             60.0°           60.0°           no
+  L Sho Flex                    128.4°            180.0°          180.0°           no
+  R Sho Flex                    100.1°            180.0°          180.0°           no
+  L Sho Abd                     141.1°            180.0°          180.0°           no
+  R Sho Abd                     136.2°            180.0°          180.0°           no
+  L Hip                          99.9°            120.0°          120.0°           no
+  R Hip                         102.1°            120.0°          120.0°           no
+  L Knee                        110.2°            140.0°          140.0°           no
+  R Knee                        106.1°            140.0°          140.0°           no
+  L Ankle                        90.1°             60.0°           90.0°          YES
+  R Ankle                        59.2°             60.0°           90.0°           no
+
+--- NORMALIZED MAD COMPARISON ---
+  Using CURRENT ranges:  0.0509  (matches reported 0.0521)
+  Using CLINICAL ranges: 0.0412
+
+--- PER-JOINT BREAKDOWN ---
+Joint                 Raw MAE (°)   Norm (current)  Norm (clinical)     Change
+----------------------------------------------------------------------------
+  Cervical Pitch             4.48°           0.0996           0.0373    -0.0622 <-- IMPROVES
+  Trunk Flex                 3.21°           0.0535           0.0535    +0.0000
+  L Sho Flex                 5.28°           0.0293           0.0293    +0.0000
+  R Sho Flex                 7.81°           0.0434           0.0434    +0.0000
+  L Sho Abd                  7.45°           0.0414           0.0414    +0.0000
+  R Sho Abd                 10.18°           0.0566           0.0566    +0.0000
+  L Hip                      4.12°           0.0343           0.0343    +0.0000
+  R Hip                      4.31°           0.0359           0.0359    +0.0000
+  L Knee                     3.85°           0.0275           0.0275    +0.0000
+  R Knee                     3.62°           0.0259           0.0259    +0.0000
+  L Ankle                    5.08°           0.0847           0.0564    -0.0282 <-- IMPROVES
+  R Ankle                    4.75°           0.0792           0.0528    -0.0264 <-- IMPROVES
+----------------------------------------------------------------------------
+  MEAN                       5.34°           0.0509           0.0412
+
+--- ANALYSIS ---
+
+CERVICAL PITCH issue:
+  Current range 45° reflects ±22.5° — only the ACTIVE range observed in UI-PRMD.
+  Full cervical flex/ext clinical ROM = 120° (AMA guidelines).
+  With 45° range: 4.48° error → 0.0995 (looks bad)
+  With 120° range: 4.48° error → 0.0373 (more representative)
+  Recommendation: use 120° clinical range for fairer comparison.
+
+ANKLE issue:
+  Current range 60° reflects ±30° — only the UI-PRMD observed range.
+  Full ankle dorsi+plantarflex clinical ROM = ~90° (20°+70°).
+  With 60° range:  5.08° error → 0.0847 (looks bad)
+  With 90° range:  5.08° error → 0.0564 (more representative)
+  Recommendation: use 90° for ankle.
+
+ROOT CAUSE:
+  eval_normalized_mad.py uses UI-PRMD DATA RANGES, not clinical ROM limits.
+  The docstring says 'clinical limits' but the values match observed UI-PRMD ranges.
+  This penalizes joints with small observed variance in the dataset.
+
+RECOMMENDATION:
+  Update ANGLE_RANGES in eval_normalized_mad.py to use proper clinical ROM:
+  Cervical Pitch: 45° → 120°,  Ankle: 60° → 90°
+  This would change overall Normalized MAD: 0.0509 → 0.0412
+================================================================================

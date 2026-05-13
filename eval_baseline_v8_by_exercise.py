@@ -168,7 +168,7 @@ def main():
     angle_head = build_angle_head(in_features=69, hidden=hidden,
                                   n_joints=n_joints).to(device)
 
-    model.load_state_dict(ckpt['state_dict'])
+    model.load_state_dict(ckpt['state_dict'], strict=False)
     angle_head.load_state_dict(angle_state)
 
     print(f'==> Loading test data: {args.data_test}')
@@ -181,8 +181,9 @@ def main():
     model.eval()
     angle_head.eval()
 
-    # Per-exercise aggregation
-    per_exercise_mae = {i: [] for i in range(10)}
+    # Per-exercise aggregation (store predictions and ground truth)
+    per_exercise_pred = {i: [] for i in range(10)}
+    per_exercise_gt = {i: [] for i in range(10)}
     body_mpjpe_sum = 0.0
     rom_mae_sum = np.zeros(n_joints, dtype=np.float64)
     n_total = 0
@@ -201,12 +202,12 @@ def main():
             body_mpjpe_sum += mpjpe(body_3d, targets_3d[:, :23]).item() * 1000 * B
 
             gt_used = gt_angles[:, :n_joints]
-            mae_per_sample = (pred_angles - gt_used).abs().mean(dim=1).cpu().numpy()
             
-            # Track per-exercise
+            # Track per-exercise (store all samples for MAD/RMSE/MAPE calculation)
             for i in range(B):
                 ex_id = int(exercise_ids[i].item())
-                per_exercise_mae[ex_id].append(mae_per_sample[i])
+                per_exercise_pred[ex_id].append(pred_angles[i].cpu().numpy())
+                per_exercise_gt[ex_id].append(gt_used[i].cpu().numpy())
 
             mae = (pred_angles - gt_used).abs().mean(dim=0).cpu().numpy()
             rom_mae_sum += mae * B
@@ -216,31 +217,70 @@ def main():
     rom_mae_overall = rom_mae_sum / n_total
     mean_mae_overall = float(rom_mae_overall.mean())
 
-    # Compute per-exercise mean MAE
-    per_exercise_mean_mae = {}
-    for ex_id in range(10):
-        if len(per_exercise_mae[ex_id]) > 0:
-            per_exercise_mean_mae[ex_id] = np.mean(per_exercise_mae[ex_id])
-        else:
-            per_exercise_mean_mae[ex_id] = 0.0
+    # Helper functions for metrics
+    def _mad(y, yhat, eps=1e-8):
+        """Mean Absolute Deviation"""
+        return float(np.mean(np.abs(y - yhat)))
+    
+    def _rmse(y, yhat):
+        """Root Mean Squared Error"""
+        return float(np.sqrt(np.mean((y - yhat) ** 2)))
+    
+    def _mape(y, yhat, eps=1e-8):
+        """Mean Absolute Percentage Error (%)"""
+        return float(np.mean(np.abs(y - yhat) / (np.abs(y) + eps)) * 100)
 
-    # Print per-exercise results (TABLE I format)
-    bar = '=' * 70
+    # Compute per-exercise metrics (MAD, RMSE, MAPE)
+    per_exercise_metrics = {}
+    for ex_id in range(10):
+        if len(per_exercise_pred[ex_id]) == 0:
+            continue
+        pred_arr = np.array(per_exercise_pred[ex_id])  # (N, n_joints)
+        gt_arr = np.array(per_exercise_gt[ex_id])      # (N, n_joints)
+        
+        # Flatten for overall metrics
+        pred_flat = pred_arr.flatten()
+        gt_flat = gt_arr.flatten()
+        
+        mad = _mad(gt_flat, pred_flat)
+        rmse = _rmse(gt_flat, pred_flat)
+        mape = _mape(gt_flat, pred_flat)
+        n_frames = len(per_exercise_pred[ex_id])
+        
+        per_exercise_metrics[ex_id] = {
+            'MAD': mad,
+            'RMSE': rmse,
+            'MAPE': mape,
+            'N': n_frames
+        }
+
+    # Print per-exercise results (TABLE I format with MAD/RMSE/MAPE)
+    bar = '=' * 80
     print('\n' + bar)
-    print(f'Per-Exercise Mean ROM MAE (°) — Checkpoint: {args.checkpoint}')
+    print(f'Per-Exercise ROM Metrics — Checkpoint: {args.checkpoint}')
     print(f'Body MPJPE: {body_mpjpe_mm:.2f} mm  |  Overall Mean ROM MAE: {mean_mae_overall:.4f}°')
     print(bar)
-    print(f'{"Exercise":<12} | {"Mean MAE (°)":>12} | {"Frames":>8}')
-    print('-' * 70)
+    print(f'{"Exercise":<10} {"MAD (°)":>12} {"RMSE (°)":>12} {"MAPE (%)":>12} {"Frames":>8}')
+    print('-' * 80)
     
     for ex_id in range(10):
         ex_name = EXERCISE_NAMES[ex_id]
-        mae_val = per_exercise_mean_mae[ex_id]
-        n_frames = len(per_exercise_mae[ex_id])
-        print(f'{ex_name:<12} | {mae_val:>12.5f} | {n_frames:>8}')
+        if ex_id in per_exercise_metrics:
+            m = per_exercise_metrics[ex_id]
+            print(f'{ex_name:<10} {m["MAD"]:>12.4f} {m["RMSE"]:>12.4f} {m["MAPE"]:>12.2f} {m["N"]:>8}')
     
-    print('-' * 70)
-    print(f'{"Average":<12} | {mean_mae_overall:>12.5f} | {n_total:>8}')
+    print('-' * 80)
+    
+    # Compute overall metrics
+    all_pred = np.concatenate([np.array(per_exercise_pred[i]) for i in range(10) 
+                              if len(per_exercise_pred[i]) > 0])
+    all_gt = np.concatenate([np.array(per_exercise_gt[i]) for i in range(10) 
+                            if len(per_exercise_gt[i]) > 0])
+    overall_mad = _mad(all_gt.flatten(), all_pred.flatten())
+    overall_rmse = _rmse(all_gt.flatten(), all_pred.flatten())
+    overall_mape = _mape(all_gt.flatten(), all_pred.flatten())
+    
+    print(f'{"Average":<10} {overall_mad:>12.4f} {overall_rmse:>12.4f} {overall_mape:>12.2f} {n_total:>8}')
     print(bar)
 
     # Print per-joint results
@@ -260,21 +300,23 @@ def main():
             writer = csv.writer(f)
             
             # Header
-            writer.writerow(['Exercise', 'Mean_MAE_deg', 'Num_Frames'])
+            writer.writerow(['Exercise', 'MAD_deg', 'RMSE_deg', 'MAPE_percent', 'Num_Frames'])
             
             # Per-exercise rows
             for ex_id in range(10):
                 ex_name = EXERCISE_NAMES[ex_id]
-                mae_val = per_exercise_mean_mae[ex_id]
-                n_frames = len(per_exercise_mae[ex_id])
-                writer.writerow([ex_name, f'{mae_val:.5f}', n_frames])
+                if ex_id in per_exercise_metrics:
+                    m = per_exercise_metrics[ex_id]
+                    writer.writerow([ex_name, f'{m["MAD"]:.4f}', f'{m["RMSE"]:.4f}', 
+                                   f'{m["MAPE"]:.2f}', m['N']])
             
             # Summary
             writer.writerow([])
-            writer.writerow(['Overall', f'{mean_mae_overall:.5f}', n_total])
-            writer.writerow(['Body_MPJPE_mm', f'{body_mpjpe_mm:.2f}', ''])
-            writer.writerow(['Checkpoint', args.checkpoint, ''])
-            writer.writerow(['Epoch', epoch, ''])
+            writer.writerow(['Overall', f'{overall_mad:.4f}', f'{overall_rmse:.4f}', 
+                           f'{overall_mape:.2f}', n_total])
+            writer.writerow(['Body_MPJPE_mm', f'{body_mpjpe_mm:.2f}', '', '', ''])
+            writer.writerow(['Checkpoint', args.checkpoint, '', '', ''])
+            writer.writerow(['Epoch', epoch, '', '', ''])
             
             # Per-joint breakdown
             writer.writerow([])

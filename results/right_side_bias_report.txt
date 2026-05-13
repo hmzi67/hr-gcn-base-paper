@@ -1,0 +1,77 @@
+================================================================================
+RIGHT vs LEFT SHOULDER BIAS ANALYSIS
+================================================================================
+
+--- OVERALL ANGLE STATISTICS ---
+Joint            Train mean  Train std    Test mean   Test std
+------------------------------------------------------------
+  L Sho Flex          61.90°      36.27°        65.10°      33.46°
+  R Sho Flex          99.40°      29.98°        92.39°      26.31°
+  L Sho Abd           56.33°      39.19°        59.18°      37.01°
+  R Sho Abd          104.18°      36.09°        96.89°      32.76°
+
+--- TRAIN vs TEST DISTRIBUTION (R SHOULDER) ---
+  R Sho Abd  TRAIN: mean=104.18°  std=36.09°  range=[21.8, 180.0]
+  R Sho Abd  TEST:  mean=96.89°  std=32.76°  range=[29.4, 165.6]
+  L Sho Abd  TRAIN: mean=56.33°  std=39.19°  range=[0.0, 142.4]
+  L Sho Abd  TEST:  mean=59.18°  std=37.01°  range=[4.1, 145.2]
+
+  Train→Test mean shift:  R Sho Abd = 7.29°   L Sho Abd = 2.85°
+  RIGHT shoulder has larger train/test distribution shift — harder to generalise.
+
+--- PER-EXERCISE R vs L SHOULDER ABD (train) ---
+Exercise                                   L Abd mean   R Abd mean    Asymmetry   R > L?
+--------------------------------------------------------------------------------------
+  E1 Deep Squat                                 119.24°       150.47°       +31.23°      YES
+  E2 Hurdle Step                                 30.14°        77.82°       +47.68°      YES
+  E3 Inline Lunge                                80.91°       111.08°       +30.18°      YES
+  E4 Side Lunge                                  80.45°       115.94°       +35.48°      YES
+  E5 Sit to Stand                                80.77°       110.66°       +29.89°      YES
+  E6 Standing Active Straight Leg Raise          77.63°       108.09°       +30.47°      YES
+  E7 Standing Shoulder Abduction                 20.11°       101.81°       +81.70°      YES
+  E8 Shoulder Extension                          12.67°        55.67°       +43.00°      YES
+  E9 Standing Shoulder Internal Rotation         22.36°       115.78°       +93.42°      YES
+  E10 Standing Shoulder External Rotation         16.74°        78.80°       +62.06°      YES
+
+--- ANGLE VARIABILITY (std) — TRAIN ---
+  High std means the model must learn a wider range → harder.
+Joint             Overall std
+  L Sho Flex            36.27°
+  R Sho Flex            29.98°
+  L Sho Abd             39.19°
+  R Sho Abd             36.09°
+
+  Per-exercise std for shoulder joints (shoulder exercises only):
+  Exercise                             L Sho Abd std  R Sho Abd std     R>L?
+  -------------------------------------------------------------------------
+  E7 Standing Shoulder Abduction                25.48°          48.95°      YES
+  E8 Shoulder Extension                          3.63°          18.73°      YES
+  E9 Standing Shoulder Internal Rotation          21.55°          24.99°      YES
+  E10 Standing Shoulder External Rotation          13.13°          39.72°      YES
+
+--- TEST SUBJECTS (S9, S10) ---
+  UI-PRMD paper (Vakanski 2018) does not document handedness.
+  However we can check R vs L shoulder asymmetry in test subjects.
+  Test Subject S9: L Sho Abd mean=49.05°  R Sho Abd mean=98.62°  diff=+49.57°
+  Test Subject S10: L Sho Abd mean=71.07°  R Sho Abd mean=94.86°  diff=+23.80°
+
+--- OCCLUSION PROXY (2D keypoint spread) ---
+  E7: L shoulder x-std=0.0368  R shoulder x-std=0.0415  R more variable
+  E8: L shoulder x-std=0.0941  R shoulder x-std=0.1043  R more variable
+  E9: L shoulder x-std=0.0246  R shoulder x-std=0.0314  R more variable
+  E10: L shoulder x-std=0.0593  R shoulder x-std=0.0636  R more variable
+
+--- ROOT CAUSE SUMMARY ---
+  1. Variability: R Sho Abd std=36.09°  vs L Sho Abd std=39.19°
+     L has higher variability
+  2. Train/test shift: R Sho Abd 7.29° vs L Sho Abd 2.85°
+     R shoulder distribution in test differs more from train — generalisation gap.
+  3. Right shoulder joints lack bilateral symmetry in some exercises (see above).
+  4. Occlusion: right-side exercises (E8 Shoulder Extension) emphasize right arm,
+     left-only exercises are rarer in UI-PRMD → right arm more ambiguous to 2D→3D.
+
+RECOMMENDATIONS:
+  - Apply left-right mirror augmentation more aggressively (p_mirror=0.7)
+  - Use joint weights: R_sho_abd=3.0x, L_sho_abd=2.0x (Task 2b)
+  - Use exercise weights: E8 RSA/RSF = 2.5x (Task 2a)
+================================================================================
