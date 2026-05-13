@@ -37,7 +37,7 @@ from lib.config import cfg
 from common.graph_utils import adj_mx_from_skeleton
 from common.loss import mpjpe
 from common.clinical_loss import ClinicalPoseLoss
-from models.clinical_angle_head import ClinicalAngleHead
+from models.clinical_angle_head import ClinicalAngleHead, QualityScoreHead
 from utils.prepare_data_h3wb import Human3WBDataset
 
 import models.graph_hrnet_multi_branch as ghrmb
@@ -145,6 +145,10 @@ def parse_args():
     parser.add_argument('--dropout', default=0.0, type=float)
     parser.add_argument('--log_file', default='', type=str,
                         help='Path to log file. Defaults to <checkpoint>/train_rehab.log')
+    parser.add_argument('--train_quality_head', action='store_true',
+                        help='Enable quality score regression head (requires quality_scores key in NPZ)')
+    parser.add_argument('--lambda_quality', default=0.1, type=float,
+                        help='Weight for quality score MSE loss when --train_quality_head is set')
 
     return parser.parse_args()
 
@@ -166,7 +170,7 @@ def setup_logging(log_path: str):
     def _print(*args, **kwargs):
         kwargs.pop('file', None)
         kwargs.pop('flush', None)
-        logging.info(' '.join(str(a) for a in args))
+        _real_print(*args, **kwargs)
 
     builtins.print = _print
 
@@ -182,12 +186,26 @@ class UIRPMDDataset(Dataset):
     _RIGHT_JOINTS = [6, 8, 10, 12, 14, 16]  # R counterparts
     _ANGLE_SWAPS  = [(2, 3), (4, 5), (6, 7), (8, 9), (10, 11)]  # (L_idx, R_idx)
 
-    def __init__(self, npz_path: str, p_mirror: float = 0.0):
+    def __init__(self, npz_path: str, p_mirror: float = 0.0,
+                 require_quality: bool = False):
         d = np.load(npz_path, allow_pickle=True)
         self.poses_2d   = torch.from_numpy(d['poses_2d']).float()    # (N, 133, 2)
         self.poses_3d   = torch.from_numpy(d['poses_3d']).float()    # (N, 133, 3)
         self.rom_angles = torch.from_numpy(d['rom_angles']).float()  # (N, 12)
         self.p_mirror   = p_mirror
+
+        if 'quality_scores' in d:
+            self.quality_scores = torch.from_numpy(
+                d['quality_scores'].astype(np.float32)).float()   # (N,)
+        elif require_quality:
+            raise KeyError(
+                f"\n[ERROR] 'quality_scores' key not found in {npz_path}.\n"
+                "UI-PRMD quality scores (Vakanski et al., 2018 GMM) must be added\n"
+                "to the NPZ before using --train_quality_head.\n"
+                "Expected: np.savez(..., quality_scores=array_shape_(N,)_range_0_to_1)"
+            )
+        else:
+            self.quality_scores = None
 
     def __len__(self):
         return len(self.poses_2d)
@@ -196,6 +214,9 @@ class UIRPMDDataset(Dataset):
         poses_2d   = self.poses_2d[idx].clone()    # (133, 2)
         poses_3d   = self.poses_3d[idx].clone()    # (133, 3)
         rom_angles = self.rom_angles[idx].clone()  # (12,)
+        quality    = (self.quality_scores[idx].clone()
+                      if self.quality_scores is not None
+                      else torch.tensor(-1.0))     # sentinel when unavailable
 
         if self.p_mirror > 0.0 and torch.rand(1).item() < self.p_mirror:
             poses_2d[:, 0] *= -1
@@ -207,7 +228,7 @@ class UIRPMDDataset(Dataset):
             for li, ri in self._ANGLE_SWAPS:
                 rom_angles[[li, ri]] = rom_angles[[ri, li]]
 
-        return poses_2d, poses_3d, rom_angles
+        return poses_2d, poses_3d, rom_angles, quality
 
 
 # ---------------------------------------------------------------------------
@@ -247,19 +268,23 @@ def _get_skeleton():
 # ---------------------------------------------------------------------------
 
 def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
-                    epoch, total_epochs):
+                    epoch, total_epochs, quality_head=None, lambda_quality=0.1):
     model.train()
     angle_head.train()
+    if quality_head is not None:
+        quality_head.train()
 
-    total_loss = total_pos = total_ang = total_con = 0.0
+    total_loss = total_pos = total_ang = total_con = total_qual = 0.0
+    mse_loss = nn.MSELoss()
 
     pbar = tqdm(loader, desc=f'Ep{epoch+1:3d}/{total_epochs}',
                 ncols=100, leave=False, file=sys.stdout)
 
-    for i, (inputs_2d, targets_3d, target_angles) in enumerate(pbar):
-        inputs_2d     = inputs_2d.to(device)
-        targets_3d    = targets_3d.to(device)
-        target_angles = target_angles.to(device)
+    for i, (inputs_2d, targets_3d, target_angles, target_quality) in enumerate(pbar):
+        inputs_2d      = inputs_2d.to(device)
+        targets_3d     = targets_3d.to(device)
+        target_angles  = target_angles.to(device)
+        target_quality = target_quality.to(device)   # (B,)
 
         body_3d, face_3d, lhand_3d, rhand_3d = model(inputs_2d)
 
@@ -284,12 +309,24 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
         else:
             backward_loss = loss_dict['total']
 
+        # Optional quality score loss (only when labels are real, not sentinel -1)
+        qual_loss_val = 0.0
+        if quality_head is not None:
+            valid = (target_quality >= 0)   # mask out sentinel rows
+            if valid.any():
+                pred_quality = quality_head(pred_angles.detach())  # (B, 1)
+                pred_q = pred_quality[valid].squeeze(1)
+                gt_q   = target_quality[valid]
+                L_qual = mse_loss(pred_q, gt_q)
+                backward_loss = backward_loss + lambda_quality * L_qual
+                qual_loss_val = L_qual.item()
+
         optimizer.zero_grad()
         backward_loss.backward()
-        nn.utils.clip_grad_norm_(
-            list(model.parameters()) + list(angle_head.parameters()),
-            max_norm=1.0,
-        )
+        all_params = list(model.parameters()) + list(angle_head.parameters())
+        if quality_head is not None:
+            all_params += list(quality_head.parameters())
+        nn.utils.clip_grad_norm_(all_params, max_norm=1.0)
         optimizer.step()
 
         n = i + 1
@@ -297,11 +334,13 @@ def train_one_epoch(loader, model, angle_head, criterion, optimizer, device,
         total_pos  += loss_dict['L_pos']
         total_ang  += loss_dict['L_angle']
         total_con  += loss_dict['L_constraint']
+        total_qual += qual_loss_val
 
         pbar.set_postfix(
             loss=f'{total_loss/n:.4f}',
             pos=f'{total_pos/n:.4f}',
             ang=f'{total_ang/n:.4f}',
+            **({'qual': f'{total_qual/n:.4f}'} if quality_head is not None else {}),
         )
 
     pbar.close()
@@ -322,7 +361,7 @@ def evaluate(loader, model, angle_head, device):
     n_samples              = 0
 
     with torch.no_grad():
-        for inputs_2d, targets_3d, target_angles in loader:
+        for inputs_2d, targets_3d, target_angles, _quality in loader:
             inputs_2d     = inputs_2d.to(device)
             targets_3d    = targets_3d.to(device)
             target_angles = target_angles.to(device)
@@ -393,6 +432,10 @@ def main():
     if args.from_scratch and args.pretrained:
         print('=> WARNING: --from_scratch set; ignoring --pretrained')
         args.pretrained = ''
+    if args.from_scratch and args.warmup_epochs > 0:
+        print(f'=> WARNING: --from_scratch set; overriding --warmup_epochs {args.warmup_epochs} → 0 '
+              f'(warmup is counterproductive without pretrained weights)')
+        args.warmup_epochs = 0
 
     device = torch.device('cuda:0')
     cudnn.benchmark = True
@@ -413,6 +456,12 @@ def main():
 
     # ---- Clinical angle head ----
     angle_head = ClinicalAngleHead(in_features=69, hidden=128).to(device)
+
+    # ---- Optional quality score head ----
+    quality_head = QualityScoreHead().to(device) if args.train_quality_head else None
+    if quality_head is not None:
+        print('==> Quality score head enabled (lambda_quality={:.3f})'.format(
+            args.lambda_quality))
 
     if args.pretrained and not args.from_scratch:
         if not path.isfile(args.pretrained):
@@ -441,13 +490,17 @@ def main():
 
     # Optimizer with differential learning rates
     backbone_lr = args.lr * args.backbone_lr_factor
+    head_params = list(angle_head.parameters())
+    if quality_head is not None:
+        head_params += list(quality_head.parameters())
+
     if args.freeze_backbone:
-        optimizer = torch.optim.Adam(angle_head.parameters(), lr=args.lr)
+        optimizer = torch.optim.Adam(head_params, lr=args.lr)
         print(f'==> Optimizer: angle_head lr={args.lr:.2e}')
     else:
         optimizer = torch.optim.Adam([
-            {'params': model.parameters(),      'lr': backbone_lr},
-            {'params': angle_head.parameters(), 'lr': args.lr},
+            {'params': model.parameters(), 'lr': backbone_lr},
+            {'params': head_params,        'lr': args.lr},
         ])
         status = '(from-scratch)' if args.from_scratch else '(fine-tune)'
         print(f'==> Optimizer {status}: backbone lr={backbone_lr:.2e}  angle_head lr={args.lr:.2e}')
@@ -462,8 +515,10 @@ def main():
 
     # ---- Data ----
     print('==> Loading UI-PRMD data...')
-    train_set = UIRPMDDataset(args.data_train, p_mirror=0.5)
-    test_set  = UIRPMDDataset(args.data_test,  p_mirror=0.0)
+    train_set = UIRPMDDataset(args.data_train, p_mirror=0.5,
+                              require_quality=args.train_quality_head)
+    test_set  = UIRPMDDataset(args.data_test,  p_mirror=0.0,
+                              require_quality=False)
     train_loader = DataLoader(train_set, batch_size=args.batch_size,
                               shuffle=True,  num_workers=args.num_workers,
                               pin_memory=True, drop_last=True)
@@ -473,11 +528,12 @@ def main():
     print(f'    Train frames: {len(train_set)}  Test frames: {len(test_set)}')
 
     # ---- LR scheduler: ReduceLROnPlateau halves LR when val MAE stops improving ----
+    scheduler_patience = 15 if args.from_scratch else 8
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
         factor=0.5,
-        patience=8,
+        patience=scheduler_patience,
         min_lr=1e-6,
         verbose=True,
     )
@@ -517,7 +573,8 @@ def main():
 
         train_loss = train_one_epoch(
             train_loader, model, angle_head, criterion, optimizer, device,
-            epoch, args.epochs)
+            epoch, args.epochs,
+            quality_head=quality_head, lambda_quality=args.lambda_quality)
 
         (body_mpjpe, face_mpjpe, hand_mpjpe,
          face_aligned_mpjpe, hand_aligned_mpjpe,
@@ -547,14 +604,17 @@ def main():
 
         if mean_mae < best_mae:
             best_mae = mean_mae
-            torch.save({
+            ckpt = {
                 'epoch':                  epoch + 1,
                 'state_dict':             model.state_dict(),
                 'angle_head_state_dict':  angle_head.state_dict(),
                 'optimizer':              optimizer.state_dict(),
                 'best_mae':               best_mae,
                 'args':                   vars(args),
-            }, best_ckpt)
+            }
+            if quality_head is not None:
+                ckpt['quality_head_state_dict'] = quality_head.state_dict()
+            torch.save(ckpt, best_ckpt)
             print(f'  --> NEW BEST {best_mae:.2f}° saved')
 
     # ---- Final summary table ----

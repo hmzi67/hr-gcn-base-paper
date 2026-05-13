@@ -13,6 +13,38 @@ import torch.nn as nn
 from common.anatomical_constraints import clamp_angles_to_valid_range
 
 
+class QualityScoreHead(nn.Module):
+    """
+    Predicts a scalar exercise quality score in [0, 1] from a sequence of ROM angles.
+
+    Input:  (B, T, 12) — T frames of ROM angles, or (B, 12) for a single frame
+    Output: (B, 1)     — quality score in [0, 1]
+
+    Temporal mean pooling collapses T; a small MLP regresses to [0, 1] via Sigmoid.
+    Designed for comparison against Deb et al. (2022, IEEE TNSRE) and
+    Kourbane et al. (2025, Computers Bio & Med) on the UI-PRMD dataset.
+    """
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(12, 32),
+            nn.ReLU(),
+            nn.Dropout(0.25),
+            nn.Linear(32, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, angles: torch.Tensor) -> torch.Tensor:
+        """
+        angles: (B, T, 12) or (B, 12)
+        returns: (B, 1) quality score in [0, 1]
+        """
+        if angles.dim() == 2:
+            angles = angles.unsqueeze(1)   # (B, 1, 12)
+        x = angles.mean(dim=1)             # temporal mean: (B, 12)
+        return self.net(x)                 # (B, 1)
+
+
 class ClinicalAngleHead(nn.Module):
     """
     Lightweight MLP that maps body 3D joints (23 x 3 = 69 features)
