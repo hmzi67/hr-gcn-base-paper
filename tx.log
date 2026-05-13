@@ -1,4 +1,4 @@
-python train_rehab.py --cfg checkpoint\w32_adam_lr1e-3.yaml --gcn dc_preagg --model 1 --from_scratch --epochs 100 --lr 5e-4 --backbone_lr_factor 1.0 --batch_size 512 --warmup_epochs 3 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_scratch
+python train_rehab.py --cfg checkpoint/w32_adam_lr1e-3.yaml --gcn dc_preagg --model 1 --from_scratch --epochs 100 --lr 5e-4 --backbone_lr_factor 1.0 --batch_size 512 --warmup_epochs 3 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_scratch
 
 
 (venv) PS D:\Hmzi Thesis\hr-gcn-base-paper\hr-gcn-base-paper> python train_rehab.py --cfg checkpoint\w32_adam_lr1e-3.yaml --gcn dc_preagg --model 1 --from_scratch --epochs 100 --lr 5e-4 --backbone_lr_factor 1.0 --batch_size 256 --warmup_epochs 3 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_scratch

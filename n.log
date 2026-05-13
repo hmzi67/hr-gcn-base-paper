@@ -1,0 +1,174 @@
+(venv) genesys@genesys-MS-7B05:~/hamza/HR-GCN % python train_rehab.py --cfg checkpoint/w32_adam_lr1e-3.yaml --gcn dc_preagg --model 1 --from_scratch --epochs 100 --lr 5e-4 --backbone_lr_factor 1.0 --batch_size 512 --warmup_epochs 3 --lambda_angle 0.0 --lambda_constraint 0.0 --checkpoint checkpoint_rehab_baseline_scratch
+
+==> Log file: checkpoint_rehab_baseline_scratch/train_rehab.log
+==> Settings: {'pretrained': '', 'cfg': 'checkpoint/w32_adam_lr1e-3.yaml', 'gcn': 'dc_preagg', 'model': 1, 'epochs': 100, 'lr': 0.0005, 'batch_size': 512, 'freeze_backbone': False, 'backbone_lr_factor': 1.0, 'lambda_angle': 0.0, 'lambda_constraint': 0.0, 'warmup_epochs': 3, 'progressive_weights': False, 'from_scratch': True, 'checkpoint': 'checkpoint_rehab_baseline_scratch', 'data_train': 'data/uiprmd_train.npz', 'data_test': 'data/uiprmd_test.npz', 'num_workers': 4, 'hid_dim': 64, 'num_layers': 4, 'dropout': 0.0, 'log_file': '', 'train_quality_head': False, 'lambda_quality': 0.1}
+=> WARNING: --from_scratch set; overriding --warmup_epochs 3 → 0 (warmup is counterproductive without pretrained weights)
+==> Loading skeleton...
+Dataset preparation is done!
+==> Building model...
+Dataset preparation is done!
+=> init weights from normal distribution
+    Total parameters: 25.79M
+==> Training from random initialization (--from_scratch)
+==> Optimizer (from-scratch): backbone lr=5.00e-04  angle_head lr=5.00e-04
+==> Loading UI-PRMD data...
+    Train frames: 204194  Test frames: 49475
+/home/genesys/hamza/HR-GCN/venv/lib/python3.12/site-packages/torch/optim/lr_scheduler.py:62: UserWarning: The verbose parameter is deprecated. Please use get_last_lr() to access the learning rate.
+  warnings.warn(
+Ep  1/100 loss=0.1746 MPJPE=481.8mm MAE=18.09° [CP=6.3 TF=4.9 LSF=31.5 RSF=22.9 LSA=36.4 RSA=29.2 LH=18.2 RH=15.4 LK=20.5 RK=17.0 LA=7.4 RA=7.4] lr=5.0e-04/5.0e-04
+  --> NEW BEST 18.09° saved
+Ep  2/100 loss=0.1638 MPJPE=451.2mm MAE=18.86° [CP=7.5 TF=5.0 LSF=30.5 RSF=24.5 LSA=34.9 RSA=31.1 LH=18.3 RH=15.5 LK=20.7 RK=17.1 LA=10.5 RA=11.0] lr=5.0e-04/5.0e-04
+Ep  3/100 loss=0.1497 MPJPE=417.3mm MAE=18.34° [CP=6.5 TF=4.9 LSF=31.1 RSF=23.5 LSA=35.6 RSA=30.1 LH=18.1 RH=15.4 LK=20.9 RK=17.3 LA=8.3 RA=8.5] lr=5.0e-04/5.0e-04
+Ep  4/100 loss=0.1380 MPJPE=389.2mm MAE=18.02° [CP=6.4 TF=4.8 LSF=30.3 RSF=23.2 LSA=34.9 RSA=29.9 LH=17.5 RH=14.9 LK=20.6 RK=17.0 LA=8.5 RA=8.2] lr=5.0e-04/5.0e-04
+  --> NEW BEST 18.02° saved
+Ep  5/100 loss=0.1275 MPJPE=369.0mm MAE=17.14° [CP=6.1 TF=4.5 LSF=29.4 RSF=23.5 LSA=34.1 RSA=30.5 LH=13.8 RH=12.8 LK=17.6 RK=15.6 LA=9.0 RA=8.7] lr=5.0e-04/5.0e-04
+  --> NEW BEST 17.14° saved
+Ep  6/100 loss=0.1207 MPJPE=358.0mm MAE=16.87° [CP=6.1 TF=4.7 LSF=31.0 RSF=23.7 LSA=36.2 RSA=30.6 LH=10.8 RH=11.8 LK=13.5 RK=15.2 LA=9.2 RA=9.6] lr=5.0e-04/5.0e-04
+  --> NEW BEST 16.87° saved
+Ep  7/100 loss=0.1160 MPJPE=348.6mm MAE=15.61° [CP=6.1 TF=4.5 LSF=28.6 RSF=25.8 LSA=33.4 RSA=33.2 LH=8.3 RH=9.7 LK=9.8 RK=11.4 LA=8.2 RA=8.3] lr=5.0e-04/5.0e-04
+  --> NEW BEST 15.61° saved
+Ep  8/100 loss=0.1123 MPJPE=340.5mm MAE=15.54° [CP=5.9 TF=4.7 LSF=28.5 RSF=24.7 LSA=33.5 RSA=31.9 LH=8.1 RH=10.0 LK=10.6 RK=12.2 LA=8.2 RA=8.1] lr=5.0e-04/5.0e-04
+  --> NEW BEST 15.54° saved
+Ep  9/100 loss=0.1089 MPJPE=330.6mm MAE=15.63° [CP=6.8 TF=4.5 LSF=25.9 RSF=25.3 LSA=30.7 RSA=32.6 LH=8.0 RH=10.3 LK=10.5 RK=12.2 LA=10.3 RA=10.5] lr=5.0e-04/5.0e-04
+Ep 10/100 loss=0.1054 MPJPE=323.3mm MAE=14.90° [CP=6.4 TF=4.5 LSF=23.1 RSF=25.2 LSA=27.6 RSA=32.9 LH=7.8 RH=10.0 LK=10.2 RK=11.9 LA=9.3 RA=9.9] lr=5.0e-04/5.0e-04
+  --> NEW BEST 14.90° saved
+Ep 11/100 loss=0.1023 MPJPE=314.8mm MAE=14.22° [CP=6.5 TF=4.6 LSF=19.5 RSF=24.8 LSA=23.5 RSA=32.7 LH=7.5 RH=10.1 LK=9.9 RK=11.9 LA=9.6 RA=10.0] lr=5.0e-04/5.0e-04
+  --> NEW BEST 14.22° saved
+Ep 12/100 loss=0.0993 MPJPE=307.0mm MAE=13.88° [CP=6.6 TF=4.8 LSF=16.9 RSF=25.0 LSA=20.3 RSA=33.0 LH=7.0 RH=10.1 LK=9.6 RK=12.4 LA=10.1 RA=10.6] lr=5.0e-04/5.0e-04
+  --> NEW BEST 13.88° saved
+Ep 13/100 loss=0.0963 MPJPE=300.0mm MAE=13.15° [CP=6.3 TF=5.0 LSF=17.0 RSF=21.6 LSA=20.3 RSA=29.2 LH=6.6 RH=9.7 LK=9.2 RK=12.4 LA=9.9 RA=10.5] lr=5.0e-04/5.0e-04
+  --> NEW BEST 13.15° saved
+Ep 14/100 loss=0.0940 MPJPE=294.0mm MAE=12.98° [CP=6.7 TF=5.2 LSF=15.7 RSF=20.5 LSA=18.9 RSA=26.5 LH=6.6 RH=9.9 LK=9.7 RK=12.8 LA=11.3 RA=11.9] lr=5.0e-04/5.0e-04
+  --> NEW BEST 12.98° saved
+Ep 15/100 loss=0.0915 MPJPE=287.5mm MAE=12.73° [CP=7.7 TF=5.2 LSF=13.9 RSF=19.1 LSA=16.6 RSA=24.1 LH=7.1 RH=9.6 LK=10.1 RK=12.8 LA=12.8 RA=13.5] lr=5.0e-04/5.0e-04
+  --> NEW BEST 12.73° saved
+Ep 16/100 loss=0.0891 MPJPE=282.3mm MAE=12.46° [CP=8.0 TF=5.2 LSF=14.0 RSF=17.8 LSA=16.4 RSA=21.8 LH=7.4 RH=9.1 LK=9.8 RK=12.6 LA=13.3 RA=14.2] lr=5.0e-04/5.0e-04
+  --> NEW BEST 12.46° saved
+Ep 17/100 loss=0.0865 MPJPE=277.2mm MAE=12.48° [CP=8.2 TF=5.2 LSF=14.4 RSF=17.3 LSA=16.7 RSA=20.9 LH=8.0 RH=8.6 LK=10.0 RK=12.4 LA=13.6 RA=14.5] lr=5.0e-04/5.0e-04
+Ep 18/100 loss=0.0843 MPJPE=270.6mm MAE=12.03° [CP=8.0 TF=5.1 LSF=14.2 RSF=15.9 LSA=16.4 RSA=19.4 LH=7.1 RH=8.1 LK=9.8 RK=12.7 LA=13.2 RA=14.4] lr=5.0e-04/5.0e-04
+  --> NEW BEST 12.03° saved
+Ep 19/100 loss=0.0824 MPJPE=267.1mm MAE=12.82° [CP=8.7 TF=5.2 LSF=14.9 RSF=17.0 LSA=17.1 RSA=20.0 LH=8.8 RH=10.0 LK=10.2 RK=13.3 LA=14.1 RA=14.7] lr=5.0e-04/5.0e-04
+Ep 20/100 loss=0.0804 MPJPE=260.9mm MAE=12.06° [CP=8.6 TF=5.0 LSF=13.7 RSF=15.7 LSA=15.8 RSA=18.9 LH=7.9 RH=8.5 LK=9.9 RK=12.8 LA=13.4 RA=14.6] lr=5.0e-04/5.0e-04
+Ep 21/100 loss=0.0786 MPJPE=256.8mm MAE=12.59° [CP=8.4 TF=5.0 LSF=14.0 RSF=17.1 LSA=16.2 RSA=19.9 LH=10.5 RH=9.3 LK=10.9 RK=13.1 LA=13.1 RA=13.8] lr=5.0e-04/5.0e-04
+Ep 22/100 loss=0.0769 MPJPE=253.1mm MAE=12.21° [CP=8.7 TF=5.0 LSF=13.1 RSF=15.9 LSA=15.4 RSA=18.8 LH=8.1 RH=8.7 LK=10.8 RK=13.3 LA=13.9 RA=14.8] lr=5.0e-04/5.0e-04
+Ep 23/100 loss=0.0753 MPJPE=250.2mm MAE=12.12° [CP=8.7 TF=5.0 LSF=13.0 RSF=15.4 LSA=15.0 RSA=18.8 LH=6.7 RH=8.9 LK=10.2 RK=14.2 LA=14.2 RA=15.5] lr=5.0e-04/5.0e-04
+Ep 24/100 loss=0.0738 MPJPE=245.3mm MAE=12.63° [CP=8.6 TF=5.0 LSF=14.3 RSF=16.4 LSA=16.6 RSA=19.4 LH=9.6 RH=9.8 LK=11.0 RK=13.7 LA=13.3 RA=13.8] lr=5.0e-04/5.0e-04
+Ep 25/100 loss=0.0720 MPJPE=242.8mm MAE=11.89° [CP=7.6 TF=5.0 LSF=13.2 RSF=15.2 LSA=15.3 RSA=18.6 LH=8.7 RH=10.0 LK=11.0 RK=14.5 LA=11.4 RA=12.1] lr=5.0e-04/5.0e-04
+  --> NEW BEST 11.89° saved
+Ep 26/100 loss=0.0706 MPJPE=238.0mm MAE=10.98° [CP=7.6 TF=4.9 LSF=12.5 RSF=12.4 LSA=14.1 RSA=16.2 LH=6.7 RH=8.4 LK=10.5 RK=13.6 LA=11.6 RA=13.1] lr=5.0e-04/5.0e-04
+  --> NEW BEST 10.98° saved
+Ep 27/100 loss=0.0691 MPJPE=234.5mm MAE=11.08° [CP=6.9 TF=5.0 LSF=12.9 RSF=12.6 LSA=14.5 RSA=16.6 LH=7.7 RH=9.3 LK=10.8 RK=14.4 LA=10.7 RA=11.5] lr=5.0e-04/5.0e-04
+Ep 28/100 loss=0.0676 MPJPE=230.4mm MAE=11.52° [CP=7.4 TF=4.9 LSF=14.2 RSF=14.3 LSA=15.4 RSA=18.4 LH=8.5 RH=8.8 LK=11.2 RK=13.3 LA=10.4 RA=11.3] lr=5.0e-04/5.0e-04
+Ep 29/100 loss=0.0665 MPJPE=225.8mm MAE=10.76° [CP=7.1 TF=4.9 LSF=12.3 RSF=12.5 LSA=13.8 RSA=16.5 LH=7.5 RH=9.1 LK=10.5 RK=13.6 LA=10.0 RA=11.5] lr=5.0e-04/5.0e-04
+  --> NEW BEST 10.76° saved
+Ep 30/100 loss=0.0649 MPJPE=224.6mm MAE=10.83° [CP=6.9 TF=5.1 LSF=11.0 RSF=11.9 LSA=12.5 RSA=15.6 LH=7.2 RH=11.0 LK=10.6 RK=16.3 LA=10.5 RA=11.5] lr=5.0e-04/5.0e-04
+Ep 31/100 loss=0.0635 MPJPE=221.7mm MAE=10.64° [CP=6.6 TF=4.9 LSF=11.6 RSF=12.2 LSA=12.9 RSA=16.0 LH=7.2 RH=10.5 LK=9.9 RK=15.6 LA=9.6 RA=10.6] lr=5.0e-04/5.0e-04
+  --> NEW BEST 10.64° saved
+Ep 32/100 loss=0.0628 MPJPE=216.7mm MAE=9.87° [CP=5.7 TF=4.9 LSF=10.2 RSF=10.9 LSA=11.6 RSA=14.3 LH=6.1 RH=11.0 LK=9.5 RK=16.1 LA=8.3 RA=9.7] lr=5.0e-04/5.0e-04
+  --> NEW BEST 9.87° saved
+Ep 33/100 loss=0.0615 MPJPE=215.4mm MAE=10.17° [CP=6.0 TF=5.0 LSF=10.1 RSF=11.3 LSA=11.3 RSA=14.7 LH=6.3 RH=11.3 LK=10.0 RK=16.7 LA=9.2 RA=10.2] lr=5.0e-04/5.0e-04
+Ep 34/100 loss=0.0601 MPJPE=212.6mm MAE=10.55° [CP=5.9 TF=4.9 LSF=11.1 RSF=12.7 LSA=12.5 RSA=16.6 LH=5.6 RH=11.7 LK=9.4 RK=17.1 LA=8.9 RA=10.2] lr=5.0e-04/5.0e-04
+Ep 35/100 loss=0.0592 MPJPE=208.9mm MAE=10.04° [CP=5.7 TF=4.7 LSF=10.8 RSF=12.2 LSA=12.2 RSA=15.5 LH=5.5 RH=11.1 LK=9.1 RK=16.1 LA=7.8 RA=9.6] lr=5.0e-04/5.0e-04
+Ep 36/100 loss=0.0577 MPJPE=206.1mm MAE=10.05° [CP=6.2 TF=4.7 LSF=10.8 RSF=12.6 LSA=12.3 RSA=16.2 LH=5.4 RH=9.8 LK=9.1 RK=14.8 LA=8.2 RA=10.5] lr=5.0e-04/5.0e-04
+Ep 37/100 loss=0.0568 MPJPE=204.8mm MAE=10.14° [CP=6.3 TF=4.9 LSF=10.1 RSF=12.6 LSA=11.3 RSA=16.3 LH=5.3 RH=9.9 LK=9.5 RK=15.4 LA=9.0 RA=11.2] lr=5.0e-04/5.0e-04
+Ep 38/100 loss=0.0555 MPJPE=198.6mm MAE=9.67° [CP=6.3 TF=4.7 LSF=9.8 RSF=12.2 LSA=11.2 RSA=15.5 LH=5.4 RH=8.8 LK=9.0 RK=14.1 LA=8.5 RA=10.4] lr=5.0e-04/5.0e-04
+  --> NEW BEST 9.67° saved
+Ep 39/100 loss=0.0544 MPJPE=197.5mm MAE=9.87° [CP=6.2 TF=4.8 LSF=9.8 RSF=12.5 LSA=11.3 RSA=16.2 LH=5.0 RH=9.1 LK=9.0 RK=14.7 LA=8.6 RA=11.2] lr=5.0e-04/5.0e-04
+Ep 40/100 loss=0.0533 MPJPE=193.5mm MAE=9.44° [CP=6.4 TF=4.7 LSF=9.3 RSF=12.1 LSA=10.6 RSA=15.5 LH=5.9 RH=8.8 LK=8.5 RK=13.3 LA=8.0 RA=10.3] lr=5.0e-04/5.0e-04
+  --> NEW BEST 9.44° saved
+Ep 41/100 loss=0.0523 MPJPE=189.1mm MAE=8.75° [CP=6.5 TF=4.4 LSF=9.0 RSF=11.3 LSA=10.1 RSA=14.3 LH=5.7 RH=7.0 LK=8.0 RK=10.9 LA=7.5 RA=10.4] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.75° saved
+Ep 42/100 loss=0.0513 MPJPE=185.8mm MAE=8.64° [CP=6.6 TF=4.5 LSF=8.8 RSF=10.3 LSA=9.7 RSA=13.1 LH=5.3 RH=6.8 LK=8.2 RK=11.5 LA=8.0 RA=11.0] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.64° saved
+Ep 43/100 loss=0.0501 MPJPE=183.7mm MAE=8.74° [CP=6.1 TF=4.4 LSF=9.0 RSF=11.3 LSA=10.2 RSA=14.3 LH=5.3 RH=7.2 LK=7.9 RK=12.3 LA=7.3 RA=9.7] lr=5.0e-04/5.0e-04
+Ep 44/100 loss=0.0492 MPJPE=181.2mm MAE=8.58° [CP=5.9 TF=4.4 LSF=8.6 RSF=11.4 LSA=10.5 RSA=14.4 LH=4.9 RH=6.6 LK=7.7 RK=11.8 LA=7.0 RA=9.6] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.58° saved
+Ep 45/100 loss=0.0483 MPJPE=178.1mm MAE=8.50° [CP=6.0 TF=4.4 LSF=8.4 RSF=11.4 LSA=10.2 RSA=14.5 LH=4.3 RH=5.6 LK=8.0 RK=11.0 LA=7.5 RA=10.8] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.50° saved
+Ep 46/100 loss=0.0472 MPJPE=177.6mm MAE=8.97° [CP=6.5 TF=4.5 LSF=8.6 RSF=12.2 LSA=10.3 RSA=15.5 LH=4.8 RH=7.1 LK=7.7 RK=12.4 LA=8.0 RA=10.1] lr=5.0e-04/5.0e-04
+Ep 47/100 loss=0.0465 MPJPE=176.5mm MAE=8.88° [CP=6.2 TF=4.5 LSF=8.8 RSF=12.0 LSA=10.7 RSA=15.3 LH=5.8 RH=7.1 LK=7.7 RK=12.0 LA=7.3 RA=9.1] lr=5.0e-04/5.0e-04
+Ep 48/100 loss=0.0454 MPJPE=172.4mm MAE=8.49° [CP=6.2 TF=4.4 LSF=8.6 RSF=11.7 LSA=10.5 RSA=14.9 LH=4.8 RH=6.2 LK=7.3 RK=10.9 LA=7.2 RA=9.2] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.49° saved
+Ep 49/100 loss=0.0446 MPJPE=169.4mm MAE=8.83° [CP=6.5 TF=4.5 LSF=9.2 RSF=11.7 LSA=11.3 RSA=15.0 LH=4.2 RH=6.0 LK=7.9 RK=10.8 LA=8.1 RA=10.7] lr=5.0e-04/5.0e-04
+Ep 50/100 loss=0.0437 MPJPE=167.3mm MAE=8.59° [CP=6.1 TF=4.6 LSF=8.6 RSF=11.9 LSA=10.8 RSA=15.0 LH=4.2 RH=6.2 LK=8.2 RK=10.8 LA=7.1 RA=9.5] lr=5.0e-04/5.0e-04
+Ep 51/100 loss=0.0432 MPJPE=165.9mm MAE=8.54° [CP=6.4 TF=4.6 LSF=8.0 RSF=12.0 LSA=9.8 RSA=15.1 LH=5.4 RH=6.3 LK=7.9 RK=10.4 LA=7.3 RA=9.4] lr=5.0e-04/5.0e-04
+Ep 52/100 loss=0.0422 MPJPE=162.5mm MAE=8.65° [CP=6.4 TF=4.7 LSF=9.0 RSF=11.7 LSA=10.9 RSA=15.0 LH=4.3 RH=5.9 LK=8.1 RK=10.1 LA=7.7 RA=10.0] lr=5.0e-04/5.0e-04
+Ep 53/100 loss=0.0415 MPJPE=162.0mm MAE=8.80° [CP=6.7 TF=4.6 LSF=9.3 RSF=11.8 LSA=11.2 RSA=15.0 LH=6.0 RH=6.0 LK=8.1 RK=9.3 LA=7.8 RA=9.7] lr=5.0e-04/5.0e-04
+Ep 54/100 loss=0.0406 MPJPE=158.9mm MAE=9.05° [CP=6.5 TF=4.6 LSF=10.9 RSF=12.3 LSA=12.6 RSA=15.8 LH=4.9 RH=5.9 LK=7.8 RK=9.5 LA=7.9 RA=10.0] lr=5.0e-04/5.0e-04
+Ep 55/100 loss=0.0398 MPJPE=159.3mm MAE=8.91° [CP=6.2 TF=4.7 LSF=10.7 RSF=12.2 LSA=12.4 RSA=15.5 LH=5.5 RH=6.2 LK=7.9 RK=9.6 LA=7.2 RA=8.8] lr=5.0e-04/5.0e-04
+Ep 56/100 loss=0.0393 MPJPE=154.7mm MAE=9.04° [CP=6.0 TF=4.5 LSF=11.7 RSF=12.6 LSA=13.0 RSA=16.2 LH=4.8 RH=5.7 LK=7.7 RK=9.1 LA=7.7 RA=9.5] lr=5.0e-04/5.0e-04
+Ep 57/100 loss=0.0386 MPJPE=155.6mm MAE=8.41° [CP=5.8 TF=4.5 LSF=8.3 RSF=13.8 LSA=9.7 RSA=17.2 LH=4.3 RH=5.8 LK=6.8 RK=9.3 LA=6.9 RA=8.5] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.41° saved
+Ep 58/100 loss=0.0378 MPJPE=153.8mm MAE=8.48° [CP=6.5 TF=4.4 LSF=8.8 RSF=12.5 LSA=10.0 RSA=16.0 LH=5.2 RH=5.8 LK=7.4 RK=8.4 LA=7.4 RA=9.4] lr=5.0e-04/5.0e-04
+Ep 59/100 loss=0.0371 MPJPE=152.9mm MAE=8.35° [CP=6.2 TF=4.4 LSF=9.4 RSF=11.3 LSA=10.7 RSA=14.6 LH=5.4 RH=5.9 LK=7.2 RK=8.8 LA=7.4 RA=9.0] lr=5.0e-04/5.0e-04
+  --> NEW BEST 8.35° saved
+Ep 60/100 loss=0.0368 MPJPE=150.8mm MAE=8.37° [CP=6.1 TF=4.1 LSF=8.8 RSF=12.4 LSA=10.7 RSA=15.7 LH=4.1 RH=5.8 LK=6.9 RK=8.4 LA=7.9 RA=9.5] lr=5.0e-04/5.0e-04
+Ep 61/100 loss=0.0360 MPJPE=148.4mm MAE=8.50° [CP=6.1 TF=4.1 LSF=9.7 RSF=12.1 LSA=11.7 RSA=15.6 LH=4.4 RH=6.2 LK=7.1 RK=8.5 LA=7.5 RA=9.0] lr=5.0e-04/5.0e-04
+Ep 62/100 loss=0.0350 MPJPE=147.0mm MAE=7.98° [CP=6.0 TF=4.0 LSF=8.3 RSF=11.1 LSA=10.2 RSA=14.5 LH=4.3 RH=5.9 LK=6.7 RK=8.2 LA=7.5 RA=9.1] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.98° saved
+Ep 63/100 loss=0.0344 MPJPE=145.1mm MAE=7.81° [CP=6.1 TF=3.8 LSF=8.3 RSF=11.5 LSA=10.3 RSA=14.7 LH=4.0 RH=5.5 LK=6.6 RK=7.1 LA=6.9 RA=9.1] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.81° saved
+Ep 64/100 loss=0.0337 MPJPE=143.4mm MAE=7.81° [CP=5.8 TF=3.7 LSF=8.8 RSF=11.7 LSA=10.9 RSA=14.8 LH=4.2 RH=5.2 LK=6.5 RK=6.9 LA=6.5 RA=8.7] lr=5.0e-04/5.0e-04
+Ep 65/100 loss=0.0330 MPJPE=144.5mm MAE=8.17° [CP=5.9 TF=3.7 LSF=9.0 RSF=12.1 LSA=11.0 RSA=15.3 LH=4.8 RH=5.3 LK=6.9 RK=7.5 LA=7.3 RA=9.3] lr=5.0e-04/5.0e-04
+Ep 66/100 loss=0.0326 MPJPE=143.1mm MAE=7.75° [CP=5.8 TF=3.7 LSF=7.8 RSF=11.7 LSA=9.8 RSA=14.6 LH=4.5 RH=5.6 LK=6.4 RK=7.4 LA=7.0 RA=8.8] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.75° saved
+Ep 67/100 loss=0.0319 MPJPE=141.9mm MAE=8.08° [CP=5.9 TF=3.6 LSF=8.5 RSF=11.9 LSA=10.5 RSA=14.9 LH=4.5 RH=6.0 LK=6.9 RK=8.3 LA=7.1 RA=8.8] lr=5.0e-04/5.0e-04
+Ep 68/100 loss=0.0311 MPJPE=142.7mm MAE=7.88° [CP=5.9 TF=3.5 LSF=8.4 RSF=11.7 LSA=10.8 RSA=14.6 LH=4.8 RH=5.4 LK=6.8 RK=6.9 LA=7.0 RA=8.7] lr=5.0e-04/5.0e-04
+Ep 69/100 loss=0.0306 MPJPE=142.8mm MAE=7.84° [CP=5.7 TF=3.7 LSF=8.6 RSF=11.1 LSA=11.0 RSA=14.1 LH=5.1 RH=5.2 LK=6.9 RK=7.3 LA=7.1 RA=8.3] lr=5.0e-04/5.0e-04
+Ep 70/100 loss=0.0301 MPJPE=139.6mm MAE=7.62° [CP=5.7 TF=3.6 LSF=8.1 RSF=11.0 LSA=10.5 RSA=13.8 LH=4.0 RH=5.1 LK=6.4 RK=7.8 LA=7.1 RA=8.2] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.62° saved
+Ep 71/100 loss=0.0293 MPJPE=141.2mm MAE=7.72° [CP=5.8 TF=3.4 LSF=8.2 RSF=11.0 LSA=10.5 RSA=13.8 LH=5.1 RH=5.1 LK=6.8 RK=7.5 LA=7.1 RA=8.3] lr=5.0e-04/5.0e-04
+Ep 72/100 loss=0.0289 MPJPE=139.3mm MAE=7.72° [CP=5.7 TF=3.5 LSF=7.9 RSF=11.4 LSA=10.6 RSA=14.4 LH=5.0 RH=4.8 LK=6.6 RK=6.7 LA=7.3 RA=8.7] lr=5.0e-04/5.0e-04
+Ep 73/100 loss=0.0287 MPJPE=138.9mm MAE=7.61° [CP=5.7 TF=3.5 LSF=8.9 RSF=9.4 LSA=11.7 RSA=11.7 LH=5.3 RH=4.7 LK=6.8 RK=7.5 LA=7.5 RA=8.8] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.61° saved
+Ep 74/100 loss=0.0280 MPJPE=135.5mm MAE=7.31° [CP=5.9 TF=3.3 LSF=8.1 RSF=9.2 LSA=10.7 RSA=11.9 LH=4.6 RH=4.2 LK=6.5 RK=6.9 LA=7.5 RA=8.9] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.31° saved
+Ep 75/100 loss=0.0275 MPJPE=132.6mm MAE=7.37° [CP=5.8 TF=3.4 LSF=8.2 RSF=9.3 LSA=10.7 RSA=11.7 LH=4.8 RH=4.8 LK=6.8 RK=7.3 LA=7.4 RA=8.4] lr=5.0e-04/5.0e-04
+Ep 76/100 loss=0.0270 MPJPE=132.6mm MAE=7.40° [CP=6.0 TF=3.3 LSF=8.9 RSF=8.9 LSA=11.3 RSA=11.3 LH=4.8 RH=4.3 LK=6.7 RK=6.5 LA=7.7 RA=9.2] lr=5.0e-04/5.0e-04
+Ep 77/100 loss=0.0265 MPJPE=128.8mm MAE=7.05° [CP=6.0 TF=3.3 LSF=7.0 RSF=9.2 LSA=8.8 RSA=12.1 LH=4.2 RH=4.1 LK=6.5 RK=6.6 LA=7.2 RA=9.7] lr=5.0e-04/5.0e-04
+  --> NEW BEST 7.05° saved
+Ep 78/100 loss=0.0259 MPJPE=130.8mm MAE=7.26° [CP=5.9 TF=3.2 LSF=8.4 RSF=9.3 LSA=10.5 RSA=11.7 LH=4.8 RH=4.2 LK=6.2 RK=5.9 LA=7.2 RA=9.7] lr=5.0e-04/5.0e-04
+Ep 79/100 loss=0.0257 MPJPE=128.9mm MAE=7.20° [CP=5.7 TF=3.2 LSF=7.9 RSF=9.6 LSA=10.0 RSA=12.4 LH=4.2 RH=4.3 LK=6.8 RK=6.9 LA=6.7 RA=8.7] lr=5.0e-04/5.0e-04
+Ep 80/100 loss=0.0250 MPJPE=128.3mm MAE=7.31° [CP=5.7 TF=3.1 LSF=8.6 RSF=9.2 LSA=10.9 RSA=11.8 LH=4.4 RH=4.3 LK=6.9 RK=6.4 LA=7.2 RA=9.1] lr=5.0e-04/5.0e-04
+Ep 81/100 loss=0.0248 MPJPE=124.8mm MAE=7.41° [CP=5.8 TF=3.0 LSF=8.8 RSF=9.7 LSA=10.8 RSA=12.4 LH=4.1 RH=4.1 LK=6.6 RK=6.4 LA=7.4 RA=9.7] lr=5.0e-04/5.0e-04
+Ep 82/100 loss=0.0241 MPJPE=122.8mm MAE=7.41° [CP=5.6 TF=3.0 LSF=9.4 RSF=9.6 LSA=11.7 RSA=12.3 LH=3.9 RH=4.0 LK=6.5 RK=6.4 LA=7.2 RA=9.3] lr=5.0e-04/5.0e-04
+Ep 83/100 loss=0.0240 MPJPE=125.1mm MAE=7.50° [CP=5.8 TF=3.0 LSF=8.7 RSF=10.0 LSA=10.6 RSA=12.9 LH=4.5 RH=4.1 LK=7.2 RK=6.9 LA=7.3 RA=9.2] lr=5.0e-04/5.0e-04
+Ep 84/100 loss=0.0234 MPJPE=123.2mm MAE=8.00° [CP=5.9 TF=3.0 LSF=9.3 RSF=11.1 LSA=11.2 RSA=14.4 LH=5.0 RH=4.4 LK=7.2 RK=7.1 LA=8.1 RA=9.3] lr=5.0e-04/5.0e-04
+Ep 85/100 loss=0.0230 MPJPE=124.3mm MAE=7.45° [CP=5.6 TF=3.0 LSF=8.8 RSF=9.7 LSA=10.7 RSA=12.5 LH=4.3 RH=4.3 LK=7.5 RK=6.9 LA=7.4 RA=8.9] lr=5.0e-04/5.0e-04
+Ep 86/100 loss=0.0225 MPJPE=118.7mm MAE=7.45° [CP=5.8 TF=2.8 LSF=8.3 RSF=10.1 LSA=9.7 RSA=13.4 LH=3.3 RH=4.7 LK=7.5 RK=7.9 LA=7.2 RA=8.7] lr=5.0e-04/5.0e-04
+Ep 87/100 loss=0.0223 MPJPE=123.8mm MAE=7.36° [CP=5.7 TF=2.9 LSF=8.1 RSF=9.4 LSA=9.7 RSA=12.1 LH=4.4 RH=4.5 LK=7.8 RK=7.2 LA=7.3 RA=9.2] lr=5.0e-04/5.0e-04
+Ep 88/100 loss=0.0220 MPJPE=118.1mm MAE=7.25° [CP=6.3 TF=2.8 LSF=7.9 RSF=9.4 LSA=9.4 RSA=12.3 LH=3.9 RH=4.3 LK=7.4 RK=6.7 LA=7.4 RA=9.2] lr=5.0e-04/5.0e-04
+Ep 89/100 loss=0.0215 MPJPE=119.4mm MAE=7.24° [CP=5.9 TF=2.7 LSF=8.2 RSF=10.0 LSA=9.3 RSA=13.0 LH=4.1 RH=4.5 LK=6.8 RK=6.2 LA=7.0 RA=9.1] lr=5.0e-04/5.0e-04
+Ep 90/100 loss=0.0212 MPJPE=113.2mm MAE=7.13° [CP=6.1 TF=2.6 LSF=7.6 RSF=9.6 LSA=8.6 RSA=12.8 LH=3.4 RH=4.4 LK=7.4 RK=6.7 LA=7.4 RA=9.0] lr=5.0e-04/5.0e-04
+Ep 91/100 loss=0.0208 MPJPE=115.6mm MAE=7.28° [CP=5.8 TF=2.7 LSF=7.7 RSF=9.3 LSA=9.1 RSA=12.3 LH=3.5 RH=5.0 LK=7.5 RK=7.8 LA=7.6 RA=9.0] lr=5.0e-04/5.0e-04
+Ep 92/100 loss=0.0208 MPJPE=115.0mm MAE=7.06° [CP=5.9 TF=2.7 LSF=7.5 RSF=9.4 LSA=8.8 RSA=12.4 LH=3.4 RH=4.5 LK=7.2 RK=7.1 LA=6.9 RA=9.0] lr=5.0e-04/5.0e-04
+Ep 93/100 loss=0.0202 MPJPE=115.9mm MAE=7.28° [CP=6.1 TF=2.8 LSF=8.2 RSF=9.7 LSA=9.6 RSA=12.7 LH=4.2 RH=4.4 LK=6.8 RK=6.7 LA=7.2 RA=9.0] lr=5.0e-04/5.0e-04
+Ep 94/100 loss=0.0193 MPJPE=116.2mm MAE=7.21° [CP=5.7 TF=2.9 LSF=8.0 RSF=9.3 LSA=9.4 RSA=12.2 LH=4.2 RH=4.4 LK=6.9 RK=7.2 LA=7.2 RA=9.2] lr=2.5e-04/2.5e-04
+Ep 95/100 loss=0.0190 MPJPE=115.8mm MAE=7.14° [CP=5.9 TF=3.0 LSF=7.9 RSF=9.3 LSA=9.1 RSA=12.2 LH=3.9 RH=4.5 LK=6.7 RK=7.0 LA=6.9 RA=9.2] lr=2.5e-04/2.5e-04
+Ep 96/100 loss=0.0188 MPJPE=115.5mm MAE=7.35° [CP=5.9 TF=2.9 LSF=8.2 RSF=9.8 LSA=9.3 RSA=13.0 LH=3.9 RH=4.6 LK=6.8 RK=7.4 LA=7.1 RA=9.2] lr=2.5e-04/2.5e-04
+Ep 97/100 loss=0.0186 MPJPE=115.9mm MAE=7.13° [CP=5.8 TF=3.0 LSF=7.6 RSF=9.2 LSA=8.5 RSA=12.3 LH=4.1 RH=4.5 LK=6.6 RK=7.4 LA=7.2 RA=9.1] lr=2.5e-04/2.5e-04
+Ep 98/100 loss=0.0184 MPJPE=117.9mm MAE=7.29° [CP=5.9 TF=3.2 LSF=8.1 RSF=9.6 LSA=9.1 RSA=12.7 LH=4.2 RH=4.9 LK=6.5 RK=7.2 LA=6.8 RA=9.2] lr=2.5e-04/2.5e-04
+Ep 99/100 loss=0.0183 MPJPE=118.2mm MAE=7.45° [CP=5.9 TF=3.2 LSF=8.4 RSF=9.9 LSA=9.5 RSA=13.1 LH=4.4 RH=4.8 LK=6.6 RK=7.3 LA=7.1 RA=9.2] lr=2.5e-04/2.5e-04
+Ep100/100 loss=0.0181 MPJPE=115.8mm MAE=7.18° [CP=6.0 TF=3.0 LSF=7.9 RSF=9.2 LSA=8.7 RSA=12.2 LH=4.0 RH=4.9 LK=6.6 RK=7.5 LA=7.0 RA=9.1] lr=2.5e-04/2.5e-04
+
+====================================
+Joint          | MAE (deg)
+---------------+----------
+Cerv Pitch     |      6.04
+Trunk Flex     |      3.02
+L Sho Flex     |      7.93
+R Sho Flex     |      9.19
+L Sho Abd      |      8.73
+R Sho Abd      |     12.20
+L Hip          |      3.96
+R Hip          |      4.87
+L Knee         |      6.64
+R Knee         |      7.55
+L Ankle        |      7.02
+R Ankle        |      9.07
+---------------+----------
+Mean           |      7.18
+====================================
+
+Best checkpoint: checkpoint_rehab_baseline_scratch/ckpt_best_rehab.pth.tar  (best MAE: 7.05 deg)
+(venv) genesys@genesys-MS-7B05:~/hamza/HR-GCN % 
