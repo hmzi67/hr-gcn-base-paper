@@ -1,0 +1,11 @@
+Metric,Correct,Incorrect,Mixed
+Baseline_MPJPE_mm,67.65,77.77,72.61
+Baseline_P-MPJPE_mm,65.06,72.82,68.87
+Baseline_ROM_MAE_deg,4.59,6.24,5.4
+Baseline_Knee_MAE_deg,3.79,4.72,4.25
+Baseline_Sho_MAE_deg,6.56,8.35,7.44
+GCADA_MPJPE_mm,85.98,99.47,92.59
+GCADA_P-MPJPE_mm,81.44,92.06,86.64
+GCADA_ROM_MAE_deg,4.22,5.93,5.06
+GCADA_Knee_MAE_deg,3.51,4.19,3.85
+GCADA_Sho_MAE_deg,4.66,6.73,5.67

@@ -1,0 +1,10 @@
+Metric,Baseline,GCADA_Full
+MPJPE_mm,77.77,99.47
+P-MPJPE_mm,72.82,92.06
+Mean_ROM_MAE_deg,6.24,5.93
+Knee_MAE_deg,4.72,4.19
+Hip_MAE_deg,3.89,4.25
+Shoulder_MAE_deg,8.35,6.73
+Trunk_MAE_deg,4.04,3.97
+Cervical_MAE_deg,8.55,11.37
+Joints_lt5,6/12,6/12

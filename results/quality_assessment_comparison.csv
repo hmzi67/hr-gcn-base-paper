@@ -1,0 +1,16 @@
+Section,Metric,3D_Keypoints,Geometric_ROM,GCADA_ROM
+Overall,Accuracy_%,85.0000,80.0000,77.5000
+Overall,F1_Score,0.8333,0.7647,0.8000
+Overall,AUC,0.8125,0.8200,0.8050
+Overall,Params,47649,33057,31521
+Overall,Input_dims,69,12,6
+Exercise_1,Deep Squat,75.0000,100.0000,100.0000
+Exercise_2,Hurdle Step,75.0000,75.0000,75.0000
+Exercise_3,Inline Lunge,100.0000,100.0000,100.0000
+Exercise_4,Side Lunge,75.0000,50.0000,75.0000
+Exercise_5,Sit to Stand,75.0000,75.0000,75.0000
+Exercise_6,Str Leg Raise,75.0000,100.0000,100.0000
+Exercise_7,Sho Abduction,100.0000,75.0000,75.0000
+Exercise_8,Sho Extension,100.0000,50.0000,75.0000
+Exercise_9,Sho Int-Ext Rot,75.0000,75.0000,50.0000
+Exercise_10,Sho Scaption,100.0000,100.0000,50.0000

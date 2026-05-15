@@ -1,0 +1,83 @@
+Device: cuda:0
+
+==> Loading NPZ data...
+  Train: 412362 frames  (204194 correct / 208168 incorrect)
+  Test : 97015 frames  (49475 correct / 47540 incorrect)
+
+==> [Path A + B] Running baseline backbone inference...
+  Loading checkpoint: checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Loading checkpoint: checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Computing geometric ROM angles (Path B)...
+
+==> [Path C] Running GCADA checkpoint inference...
+  Loading checkpoint: checkpoint_rehab_gcada_v2/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Loading checkpoint: checkpoint_rehab_gcada_v2/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+
+==> Building trial sequences (SEQ_LEN=100)...
+  Train trials: 158  (correct=79  incorrect=79)
+  Test  trials: 40  (correct=20  incorrect=20)
+
+============================================================
+Training LSTM classifiers (50 epochs each)
+============================================================
+
+  [Path A — 3D Keypoints] input_dim=69  train=158 trials  test=40 trials
+    epoch  10/50  loss=0.4634  elapsed=2.0s
+    epoch  20/50  loss=0.4055  elapsed=2.9s
+    epoch  30/50  loss=0.2628  elapsed=3.7s
+    epoch  40/50  loss=0.2750  elapsed=4.5s
+    epoch  50/50  loss=0.2529  elapsed=5.3s
+    Acc=85.00%  F1=0.8333  AUC=0.8125
+
+  [Path B — Geometric ROM] input_dim=12  train=158 trials  test=40 trials
+    epoch  10/50  loss=0.5169  elapsed=0.8s
+    epoch  20/50  loss=0.4499  elapsed=1.5s
+    epoch  30/50  loss=0.4764  elapsed=2.3s
+    epoch  40/50  loss=0.3669  elapsed=2.9s
+    epoch  50/50  loss=0.3360  elapsed=3.7s
+    Acc=80.00%  F1=0.7647  AUC=0.8200
+
+  [Path C — GCADA ROM] input_dim=6  train=158 trials  test=40 trials
+    epoch  10/50  loss=0.6180  elapsed=0.8s
+    epoch  20/50  loss=0.6639  elapsed=1.5s
+    epoch  30/50  loss=0.6975  elapsed=2.3s
+    epoch  40/50  loss=0.6358  elapsed=3.0s
+    epoch  50/50  loss=0.5868  elapsed=3.8s
+    Acc=77.50%  F1=0.8000  AUC=0.8050
+
+
+--------------------------------------------------------------
+METRIC             3D KEYPOINTS    GEO ROM  GCADA ROM
+--------------------------------------------------------------
+Accuracy(%)               85.00      80.00      77.50
+F1 Score                 0.8333     0.7647     0.8000
+AUC                      0.8125     0.8200     0.8050
+Params                   47,649     33,057     31,521
+Input dims                   69         12          6
+--------------------------------------------------------------
+
+PER EXERCISE:
+----------------------------------------------------
+Exercise              3D KP      GEO    GCADA
+----------------------------------------------------
+Deep Squat            75.00   100.00   100.00
+Hurdle Step           75.00    75.00    75.00
+Inline Lunge         100.00   100.00   100.00
+Side Lunge            75.00    50.00    75.00
+Sit to Stand          75.00    75.00    75.00
+Str Leg Raise         75.00   100.00   100.00
+Sho Abduction        100.00    75.00    75.00
+Sho Extension        100.00    50.00    75.00
+Sho Int-Ext Rot       75.00    75.00    50.00
+Sho Scaption         100.00   100.00    50.00
+----------------------------------------------------
+
+Saved: results/quality_assessment_comparison.csv

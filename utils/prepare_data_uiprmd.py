@@ -377,62 +377,94 @@ def load_vicon_file(pos_path: str):
 # Main preprocessing pipeline
 # ---------------------------------------------------------------------------
 
-def preprocess(data_dir: str, output_dir: str):
-    vicon_pos_dir = os.path.join(data_dir, 'Movements', 'Vicon', 'Positions')
-    scores_dir    = os.path.join(data_dir, 'Movements', 'Vicon', 'Scores')
-    files = sorted(glob.glob(os.path.join(vicon_pos_dir, 'm??_s??_positions.txt')))
+def preprocess(data_dir: str, output_dir: str,
+               correct_only: bool = False,
+               incorrect_only: bool = False,
+               split_filter: str = 'all'):
+    """
+    split_filter: 'all' | 'train_only' | 'test_only'
+    correct_only:   load only from Movements/ (correct executions)
+    incorrect_only: load only from 'Incorrect Movements/' (_inc files)
+    Default (neither flag): loads both folders, reproducing the full mixed NPZ.
+    """
+    scores_dir = os.path.join(data_dir, 'Movements', 'Vicon', 'Scores')
 
-    if not files:
+    # ── Collect source files ──────────────────────────────────────────────────
+    file_entries = []   # list of (fpath, is_correct: bool)
+
+    if not incorrect_only:
+        correct_dir = os.path.join(data_dir, 'Movements', 'Vicon', 'Positions')
+        for fp in sorted(glob.glob(os.path.join(correct_dir, 'm??_s??_positions.txt'))):
+            file_entries.append((fp, True))
+
+    if not correct_only:
+        incorrect_dir = os.path.join(data_dir, 'Incorrect Movements', 'Vicon', 'Positions')
+        for fp in sorted(glob.glob(os.path.join(incorrect_dir, 'm??_s??_positions_inc.txt'))):
+            file_entries.append((fp, False))
+
+    if not file_entries:
         raise FileNotFoundError(
-            f'No position files found in {vicon_pos_dir}. '
-            'Make sure Vicon/Positions/ contains m??_s??_positions.txt files.'
+            f'No position files found under {data_dir}. '
+            'Check that Movements/Vicon/Positions/ contains m??_s??_positions.txt '
+            'and/or "Incorrect Movements/Vicon/Positions/" contains m??_s??_positions_inc.txt'
         )
 
     has_scores_dir = os.path.isdir(scores_dir)
-    print(f'Found {len(files)} Vicon position files.')
+    mode_tag = 'correct-only' if correct_only else ('incorrect-only' if incorrect_only else 'mixed')
+    print(f'Found {len(file_entries)} Vicon files ({mode_tag}).')
     if has_scores_dir:
         print(f'Quality scores: loading from {scores_dir}')
     else:
-        print('Quality scores: Scores/ dir not found — deriving from Incorrect Movements/ (1.0=correct, 0.0=incorrect, -1.0=unknown)')
+        print('Quality scores: Scores/ dir not found — deriving from Incorrect Movements/')
+
+    # ── Output filename suffix ────────────────────────────────────────────────
+    type_suffix = '_correct' if correct_only else ('_incorrect' if incorrect_only else '')
 
     splits = {'train': [], 'test': []}
 
-    for fpath in files:
-        base = os.path.basename(fpath)           # e.g. m03_s07_positions.txt
+    for fpath, is_correct in file_entries:
+        base  = os.path.basename(fpath)
         parts = base.split('_')
-        exercise_id = int(parts[0][1:]) - 1      # 0-indexed (0-9)
-        subject_id  = int(parts[1][1:])          # 1-indexed (1-10)
+        exercise_id = int(parts[0][1:]) - 1   # 0-indexed
+        subject_id  = int(parts[1][1:])        # 1-indexed
 
         split = 'train' if subject_id in TRAIN_SUBJECTS else 'test'
+
+        # Skip splits not requested
+        if split_filter == 'train_only' and split != 'train':
+            continue
+        if split_filter == 'test_only'  and split != 'test':
+            continue
 
         print(f'  [{split}] {base}', end='  ', flush=True)
         poses_3d, poses_2d, rom_angles = load_vicon_file(fpath)
         T = poses_3d.shape[0]
 
-        # Quality score: try Scores/ dir first, fall back to Incorrect Movements
-        if has_scores_dir:
-            q_score = load_quality_score(scores_dir, exercise_id, subject_id)
+        if is_correct:
+            if has_scores_dir:
+                q_score = load_quality_score(scores_dir, exercise_id, subject_id)
+            else:
+                q_score = derive_quality_from_incorrect(data_dir, exercise_id, subject_id)
         else:
-            q_score = derive_quality_from_incorrect(data_dir, exercise_id, subject_id)
+            q_score = 0.0   # incorrect movement → quality 0
 
         print(f'T={T}  quality={q_score:.3f}')
 
         splits[split].append({
-            'poses_3d':      poses_3d,
-            'poses_2d':      poses_2d,
-            'rom_angles':    rom_angles,
-            'subject_ids':   np.full(T, subject_id - 1, dtype=np.int32),   # 0-indexed
-            'exercise_ids':  np.full(T, exercise_id,    dtype=np.int32),
-            'frame_ids':     np.arange(T, dtype=np.int32),
-            'quality_scores': np.full(T, q_score,       dtype=np.float32),
+            'poses_3d':       poses_3d,
+            'poses_2d':       poses_2d,
+            'rom_angles':     rom_angles,
+            'subject_ids':    np.full(T, subject_id - 1, dtype=np.int32),
+            'exercise_ids':   np.full(T, exercise_id,    dtype=np.int32),
+            'frame_ids':      np.arange(T, dtype=np.int32),
+            'quality_scores': np.full(T, q_score,        dtype=np.float32),
         })
 
     os.makedirs(output_dir, exist_ok=True)
 
     for split_name, samples in splits.items():
         if not samples:
-            print(f'WARNING: no samples for split "{split_name}"')
-            continue
+            continue   # silently skip splits that were filtered out
 
         all_3d  = np.concatenate([s['poses_3d']       for s in samples], axis=0)
         all_2d  = np.concatenate([s['poses_2d']       for s in samples], axis=0)
@@ -442,20 +474,19 @@ def preprocess(data_dir: str, output_dir: str):
         all_frm = np.concatenate([s['frame_ids']      for s in samples], axis=0)
         all_qsc = np.concatenate([s['quality_scores'] for s in samples], axis=0)
 
-        # Normalize after concatenation for consistent statistics
         all_3d_norm = normalize_3d(all_3d)
         all_2d_norm = normalize_2d(all_2d)
 
-        out_path = os.path.join(output_dir, f'uiprmd_{split_name}.npz')
+        out_path = os.path.join(output_dir, f'uiprmd_{split_name}{type_suffix}.npz')
         np.savez_compressed(
             out_path,
-            poses_2d      = all_2d_norm,
-            poses_3d      = all_3d_norm,
-            rom_angles    = all_rom,
-            subject_ids   = all_sub,
-            exercise_ids  = all_exc,
-            frame_ids     = all_frm,
-            quality_scores= all_qsc,
+            poses_2d       = all_2d_norm,
+            poses_3d       = all_3d_norm,
+            rom_angles     = all_rom,
+            subject_ids    = all_sub,
+            exercise_ids   = all_exc,
+            frame_ids      = all_frm,
+            quality_scores = all_qsc,
         )
         n_valid = int((all_qsc >= 0).sum())
         print(f'\nSaved {split_name}: {out_path}')
@@ -479,9 +510,22 @@ def main():
                         help='Path to UI-PRMD raw data directory')
     parser.add_argument('--output_dir', default='data/',
                         help='Output directory for NPZ files')
+    parser.add_argument('--correct_only', action='store_true',
+                        help='Load only correct executions from Movements/')
+    parser.add_argument('--incorrect_only', action='store_true',
+                        help='Load only incorrect executions from Incorrect Movements/')
+    parser.add_argument('--split', default='all',
+                        choices=['all', 'train_only', 'test_only'],
+                        help='Which split(s) to write (default: all)')
     args = parser.parse_args()
 
-    preprocess(args.data_dir, args.output_dir)
+    if args.correct_only and args.incorrect_only:
+        raise ValueError('--correct_only and --incorrect_only are mutually exclusive')
+
+    preprocess(args.data_dir, args.output_dir,
+               correct_only=args.correct_only,
+               incorrect_only=args.incorrect_only,
+               split_filter=args.split)
     print('\nDone.')
 
 

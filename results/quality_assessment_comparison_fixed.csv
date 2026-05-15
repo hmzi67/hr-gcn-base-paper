@@ -1,0 +1,6 @@
+Metric,3D_Keypoints,Geometric_ROM,Learned_ROM_baseline,GCADA_ROM_novel
+Accuracy_%,73.3467,61.5859,66.3668,60.7030
+F1_Score,0.7213,0.5009,0.6156,0.4787
+AUC,0.7924,0.6894,0.6997,0.6877
+Input_dims,69,12,12,12
+Params,47649,33057,33057,33057

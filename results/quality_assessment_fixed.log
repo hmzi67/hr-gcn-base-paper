@@ -1,0 +1,124 @@
+Device: cuda:0
+  Baseline: n_joints=12  hidden=128  λ_angle=0.0  λ_constraint=0.0  best_mae=4.5891°
+  Novel: n_joints=12  hidden=128  λ_angle=0.1  λ_constraint=0.05  best_mae=4.2193°
+
+==> Loading NPZ data...
+  Train: 412,362 frames  (204,194 correct / 208,168 incorrect)
+  Test : 97,015 frames  (49,475 correct / 47,540 incorrect)
+
+==> [Paths A, B, C] Baseline backbone inference...
+  Train frames...
+  Loading: checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Test frames...
+  Loading: checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Computing geometric ROM angles...
+  Applying baseline angle head (Path C)...
+
+==> [Path D] Novel (GCADA) backbone + angle head inference...
+  Train frames...
+  Loading: checkpoint_rehab_novel_v1/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+  Test frames...
+  Loading: checkpoint_rehab_novel_v1/ckpt_best_rehab.pth.tar
+Dataset preparation is done!
+Dataset preparation is done!
+
+==> Identifying trials...
+  Train: 158 trials  (79 correct)
+  Test : 40 trials  (20 correct)
+
+==> Building sliding windows (size=64, stride=16, min=32)...
+  Train windows: 25,547  (12,653 correct / 12,894 incorrect)
+  Test  windows: 6,003  (3,061 correct / 2,942 incorrect)
+
+==================================================================
+Training LSTM classifiers (50 epochs each)
+==================================================================
+
+  [Path A — 3D Keypoints]  input_dim=69  train=25,547  test=6,003 windows
+    epoch  10/50  loss=0.3855  elapsed=21.7s
+    epoch  20/50  loss=0.2582  elapsed=43.1s
+    epoch  30/50  loss=0.1091  elapsed=64.5s
+    epoch  40/50  loss=0.0578  elapsed=85.2s
+    epoch  50/50  loss=0.0446  elapsed=106.9s
+    Acc=73.35%  F1=0.7213  AUC=0.7924
+
+  [Path B — Geometric ROM]  input_dim=12  train=25,547  test=6,003 windows
+    epoch  10/50  loss=0.4213  elapsed=18.7s
+    epoch  20/50  loss=0.4422  elapsed=37.5s
+    epoch  30/50  loss=0.3505  elapsed=56.5s
+    epoch  40/50  loss=0.2574  elapsed=75.7s
+    epoch  50/50  loss=0.1827  elapsed=94.7s
+    Acc=61.59%  F1=0.5009  AUC=0.6894
+
+  [Path C — Learned ROM (baseline, λ=0)]  input_dim=12  train=25,547  test=6,003 windows
+    epoch  10/50  loss=0.4916  elapsed=19.1s
+    epoch  20/50  loss=0.4055  elapsed=38.2s
+    epoch  30/50  loss=0.3128  elapsed=57.4s
+    epoch  40/50  loss=0.2798  elapsed=76.5s
+    epoch  50/50  loss=0.3583  elapsed=95.6s
+    Acc=66.37%  F1=0.6156  AUC=0.6997
+
+  [Path D — GCADA ROM (novel, λ=0.1)]  input_dim=12  train=25,547  test=6,003 windows
+    epoch  10/50  loss=0.5317  elapsed=19.1s
+    epoch  20/50  loss=0.4425  elapsed=38.4s
+    epoch  30/50  loss=0.3767  elapsed=57.9s
+    epoch  40/50  loss=0.3214  elapsed=77.1s
+    epoch  50/50  loss=0.2417  elapsed=96.2s
+    Acc=60.70%  F1=0.4787  AUC=0.6877
+
+
+------------------------------------------------------------------
+METRIC            3D KEYPOINTS   GEO ROM  LEARNED ROM  GCADA ROM
+------------------------------------------------------------------
+Accuracy(%)              73.35     61.59        66.37      60.70
+F1 Score                0.7213    0.5009       0.6156     0.4787
+AUC                     0.7924    0.6894       0.6997     0.6877
+Input dims                  69        12           12         12
+Params                  47,649    33,057       33,057     33,057
+------------------------------------------------------------------
+
+PER EXERCISE (Accuracy %):
+------------------------------------------------------------------------
+Exercise             3D KP     GEO  LEARNED   GCADA  N_test
+------------------------------------------------------------------------
+Deep Squat           66.51   71.08    66.36   70.78     657
+Hurdle Step          80.33   77.55    66.79   60.30     539
+Inline Lunge         65.37   73.17    48.52   51.01     641
+Side Lunge           59.39   62.88    45.30   48.48     660
+Sit to Stand         78.18   66.67    68.94   71.08     747
+Str Leg Raise        91.30   81.58    86.23   69.84     494
+Sho Abduction        75.13   47.68    62.09   60.03     583
+Sho Extension        73.84   50.00    76.36   73.84     516
+Sho Int-Ext Rot      67.77   32.68    71.39   39.01     664
+Sho Scaption         83.27   54.58    81.08   67.93     502
+------------------------------------------------------------------------
+AVERAGE              74.11   61.79    67.31   61.23    6003
+------------------------------------------------------------------------
+
+Saved summary  : results/quality_assessment_comparison_fixed.csv
+Saved per-ex   : results/quality_assessment_per_exercise_fixed.csv
+
+==================================================================
+Training command (retrain from scratch):
+==================================================================
+
+# Train Quality Assessment Module
+python quality_assessment_comparison.py \
+  --train \
+  --baseline_checkpoint checkpoint_rehab_baseline_v8/ckpt_best_rehab.pth.tar \
+  --novel_checkpoint    checkpoint_rehab_novel_v1/ckpt_best_rehab.pth.tar \
+  --cfg w32_adam_lr1e-3.yaml \
+  --data_train data/uiprmd_train.npz \
+  --data_test  data/uiprmd_test.npz \
+  --window_size 64 \
+  --stride 16 \
+  --min_window 32 \
+  --epochs 50 \
+  --save_dir results/quality_assessment/
+
