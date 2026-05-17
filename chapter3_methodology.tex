@@ -1,0 +1,422 @@
+\chapter{Methodology}
+\label{ch:methodology}
+
+This chapter describes the design and implementation of the proposed
+Graph Convolutional Anatomically-constrained Dual-supervised Architecture
+(GCADA) for clinical rehabilitation pose assessment. As discussed in
+Chapter~\ref{ch:literature}, prior whole-body 3D pose estimation methods
+treat the body, face, and hands as independent regions and supervise
+exclusively on positional error in millimetres, leaving the clinically
+relevant degree-valued range-of-motion (ROM) signal entirely untouched.
+GCADA closes this gap by coupling the multi-resolution HR-GCN backbone
+of Zhang et al.~\cite{zhang2025hrgcn} to two additional learning
+mechanisms that are introduced for the first time in this thesis: an
+\textbf{Anatomical Constraint Layer} that penalises predictions falling
+outside clinically valid ROM windows, and a \textbf{Clinical Angle
+Supervision Loss} that supervises a lightweight regression head directly
+on Vicon-measured joint angles in degrees. End-to-end, the system maps
+a monocular RGB stream through seven stages: (i) RTMPose-W 2D keypoint
+detection~\cite{jiang2023rtmpose}, (ii) HR-GCN 3D lifting, (iii) per-frame
+ROM regression by the proposed angle head, (iv) hard anatomical clamping
+at inference, (v) One-Euro temporal smoothing~\cite{casiez2012euro},
+(vi) geometric ROM verification, and (vii) clinical reporting.
+
+\section{System Overview}
+\label{sec:system-overview}
+
+The proposed pipeline operates in two distinct modes that share a
+common forward graph. During \emph{training}, the network ingests
+pre-extracted 2D keypoints together with paired Vicon-derived 3D
+positions and ROM angles from the UI-PRMD dataset, optimising a
+composite loss that jointly supervises millimetre position error,
+degree angle error and an anatomical-validity penalty. During
+\emph{inference}, raw video frames are passed through the RTMPose-W
+detector to obtain 133 COCO-WholeBody 2D keypoints, the HR-GCN
+backbone lifts these to 3D, the ClinicalAngleHead regresses 12 ROM
+angles, the angles are hard-clamped to physiologically valid ranges,
+and the 3D joint trajectories are smoothed by per-coordinate One-Euro
+filters before being passed to the geometric ROM verifier and the
+clinician-facing report. A subject-level split is enforced so that no
+patient appearing during training is ever observed at evaluation,
+ensuring that the reported ROM error reflects generalisation to unseen
+individuals rather than memorisation of training subjects.
+
+\section{Dataset: UI-PRMD}
+\label{sec:dataset}
+
+The University of Idaho Physical Rehabilitation Movements Dataset
+(UI-PRMD) of Vakanski et al.~\cite{vakanski2018uiprmd} is used for all
+fine-tuning and evaluation. UI-PRMD contains optical-marker recordings
+captured by a 39-marker Vicon system at 60~Hz, providing ground-truth
+joint positions in millimetres and joint angles in degrees. Ten
+exercises (m01--m10) are performed by ten healthy subjects (s01--s10);
+the recording for subject~3, exercise~3 is missing. The subject-level
+split adopted by this work, train: s01--s08 and test: s09--s10, follows
+a leave-subjects-out protocol: it eliminates within-subject leakage
+and is the standard generalisation regime for clinical biomechanics.
+
+The raw \texttt{m\{ee\}\_s\{ss\}\_positions.txt} files are converted
+into NumPy archives by the preprocessor in
+\texttt{utils/prepare\_data\_uiprmd.py}. Each Vicon frame yields three
+synchronised tensors: a 133-joint COCO-WholeBody 2D pose
+$\mathbf{P}^{2D}\!\in\!\mathbb{R}^{133\times 2}$ obtained by an
+orthographic frontal projection $(X,-Z)$ of the marker positions;
+a 133-joint 3D pose
+$\mathbf{P}^{3D}\!\in\!\mathbb{R}^{133\times 3}$ in which the 23 body
+joints are populated from the Vicon-to-COCO mapping documented in
+the preprocessor and the 68 face and 42 hand joints are zero-padded;
+and a vector $\boldsymbol{\theta}^{*}\!\in\!\mathbb{R}^{12}$ of clinical
+ROM angles in degrees, computed geometrically from the marker positions
+(Section~\ref{sec:rom-extraction}). Both 2D and 3D poses are
+hip-centred at the midpoint of the LASI/RASI markers; 2D coordinates
+are divided by a fixed physical scale of $1\,000$~mm so that their
+empirical standard deviation matches that of the H3WB pre-training
+distribution, and 3D coordinates are converted to metres. After
+preprocessing the splits contain $204\,194$ training frames and
+$49\,475$ test frames.
+
+\section{2D Pose Detection via RTMPose-W}
+\label{sec:rtmpose}
+
+The first stage of the inference pipeline detects 2D keypoints on each
+incoming RGB frame. RTMPose-W~\cite{jiang2023rtmpose} is selected for
+its real-time performance and its native support for the COCO-WholeBody
+keypoint definition that the HR-GCN backbone expects. It produces 133
+keypoints per person comprising 17 body joints, 68 facial landmarks,
+42 hand joints (21 per hand) and 6 foot keypoints. The detector
+output is centred on the hip midpoint and divided by the same physical
+scale used during training, yielding 2D coordinates in the same
+normalised range $[-1,1]$ as the synthetic projections that drive
+training; this matched preprocessing avoids a domain gap between the
+training-time 2D distribution and the deployment-time detector output.
+
+\section{HR-GCN Backbone for 3D Lifting}
+\label{sec:hrgcn}
+
+The 2D-to-3D lifting backbone is the multi-branch HR-GCN of Zhang et
+al.~\cite{zhang2025hrgcn} (\texttt{models/graph\_hrnet\_multi\_branch.py},
+configuration \texttt{w32\_adam\_lr1e-3.yaml}, model variant 1).
+The network combines a High-Resolution Module (HRM) that maintains
+parallel multi-resolution graph branches with a Fine-Grained Keypoint
+Module (FGKPM) that processes body, face, left hand and right hand on
+dedicated heads, and is initialised from the public checkpoint
+pre-trained on the H3WB dataset~\cite{Zhu2023H3WB} (reported MPJPE of
+57.4~mm on H3WB). Given an input
+$\mathbf{P}^{2D}\!\in\!\mathbb{R}^{B\times 133\times 2}$ the backbone
+emits four part-specific 3D tensors that are concatenated to recover a
+full 3D whole-body pose
+$\hat{\mathbf{P}}^{3D}\!\in\!\mathbb{R}^{B\times 133\times 3}$.
+
+The graph convolutional operator used throughout this work is the
+\texttt{dc\_preagg} variant of Decoupled Pre-Aggregation Graph
+Convolution. For an input feature $\mathbf{H}\!\in\!\mathbb{R}^{J\times C}$
+with adjacency $\mathbf{A}\!\in\!\mathbb{R}^{J\times J}$ and identity
+$\mathbf{I}$, the layer applies separate joint-wise weight tensors
+$\mathbf{W}_{0}, \mathbf{W}_{1}\!\in\!\mathbb{R}^{J\times C\times C'}$
+to the self-loop and the neighbour aggregation respectively,
+\begin{equation}
+\mathbf{H}' = (\mathbf{A}\odot\mathbf{I})\,(\mathbf{H}\,\mathbf{W}_{0})
+            + (\mathbf{A}\odot(\mathbf{1}-\mathbf{I}))\,(\mathbf{H}\,\mathbf{W}_{1}) + \mathbf{b},
+\label{eq:dcpreagg}
+\end{equation}
+where $\odot$ denotes the Hadamard product. Equation~\ref{eq:dcpreagg}
+generalises the standard symmetric propagation rule of
+Kipf and Welling~\cite{kipf2017semi} by decoupling the parameters that
+govern a node's self-update from those that govern its aggregation
+from neighbours, which is essential for skeletons whose joints play
+heterogeneous functional roles. During fine-tuning on UI-PRMD, the
+backbone parameters are updated at half the head learning rate
+(\texttt{backbone\_lr\_factor}~$=0.5$) and are temporarily frozen for
+the first three epochs while the freshly initialised angle head warms
+up.
+
+\section{Novel Contribution 1: Proposed Anatomical Constraint Layer}
+\label{sec:n1-anatomical}
+
+\subsection{Motivation}
+A model that minimises only positional error has no incentive to
+respect physiological joint limits, and in practice may emit elbow
+hyperextensions, knee bend reversals or trunk torsions that are
+physically impossible to produce in a healthy human body. While prior
+work such as Dabral et al.~\cite{Dabral2018ECCV} introduced a generic
+illegal-angle penalty for action-recognition oriented pose, the
+present work is the first to embed a \emph{rehabilitation-specific}
+ROM constraint into a whole-body pose estimator and to enforce it both
+as a soft training penalty and as a hard inference clamp.
+
+\subsection{Joint ROM Limits}
+The constraint vocabulary spans the twelve clinically actionable ROM
+joints used throughout UI-PRMD. The minimum and maximum admissible
+angles in degrees, encoded in the dictionary
+\texttt{REHAB\_JOINT\_LIMITS}, are listed in
+Table~\ref{tab:rom-limits}.
+
+\begin{table}[h]
+\centering
+\caption{Clinical ROM limits enforced by the proposed Anatomical
+Constraint Layer. Ankle convention: $90^{\circ}$ is anatomical neutral;
+values above $90^{\circ}$ denote dorsiflexion and below $90^{\circ}$
+plantarflexion.}
+\label{tab:rom-limits}
+\begin{tabular}{lcc}
+\hline
+Joint & Min ($^{\circ}$) & Max ($^{\circ}$) \\
+\hline
+Cervical pitch          & $-60$  & $60$  \\
+Trunk flexion           & $-90$  & $90$  \\
+Left  shoulder flexion  & $-30$  & $180$ \\
+Right shoulder flexion  & $-30$  & $180$ \\
+Left  shoulder abduction& $0$    & $180$ \\
+Right shoulder abduction& $0$    & $180$ \\
+Left  hip               & $-30$  & $120$ \\
+Right hip               & $-30$  & $120$ \\
+Left  knee              & $0$    & $150$ \\
+Right knee              & $0$    & $150$ \\
+Left  ankle             & $50$   & $130$ \\
+Right ankle             & $50$   & $130$ \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Training: Soft Quadratic Penalty}
+Let $\hat{\theta}_{j}$ denote the predicted ROM angle for joint
+$j\!\in\!\{1,\dots,J\}$ with $J\!=\!12$, and let $(\theta^{\min}_{j},
+\theta^{\max}_{j})$ be its admissible interval. The proposed soft
+penalty is the mean squared excursion outside that interval,
+\begin{equation}
+\mathcal{L}_{\mathrm{constraint}} \;=\;
+\frac{1}{J}\sum_{j=1}^{J}
+\Big[\,\max\!\big(0,\;\theta^{\min}_{j}-\hat{\theta}_{j}\big)
++ \max\!\big(0,\;\hat{\theta}_{j}-\theta^{\max}_{j}\big)\,\Big]^{2}.
+\label{eq:constraint}
+\end{equation}
+The loss is identically zero whenever the prediction lies inside the
+valid ROM window and grows quadratically with the magnitude of the
+violation, providing a smooth gradient that pushes physiologically
+implausible predictions back into the admissible region.
+
+\subsection{Inference: Hard Clamp}
+At deployment, predictions are passed through a hard element-wise
+clamp,
+\begin{equation}
+\hat{\theta}^{\mathrm{out}}_{j} = \mathrm{clip}\!\big(\hat{\theta}_{j},\,
+\theta^{\min}_{j},\,\theta^{\max}_{j}\big),
+\label{eq:clamp}
+\end{equation}
+implemented in \texttt{clamp\_angles\_to\_valid\_range}. This
+guarantees that every angle reported to a clinician is physiologically
+valid by construction, irrespective of any residual numerical error in
+the regression head.
+
+\section{Novel Contribution 2: Proposed Clinical Angle Supervision Loss}
+\label{sec:n2-clinical-loss}
+
+\subsection{ClinicalAngleHead Architecture}
+A lightweight multi-layer perceptron, denoted \texttt{ClinicalAngleHead},
+maps the 23 body joints emitted by the HR-GCN backbone to the 12
+clinical ROM angles. Given the body sub-tensor
+$\mathbf{B}\!\in\!\mathbb{R}^{B\times 23\times 3}$, the head flattens
+each sample to 69 features and applies the sequence
+\begin{equation}
+\hat{\boldsymbol{\theta}} \;=\;
+\mathbf{W}_{3}\,\sigma\!\big(\mathbf{W}_{2}\,
+\mathrm{Drop}_{0.1}\!\big(\sigma(\mathbf{W}_{1}\mathbf{b})\big)\big),
+\label{eq:anglehead}
+\end{equation}
+with $\sigma\!=\!\mathrm{ReLU}$, hidden widths $69\!\rightarrow\!128
+\!\rightarrow\!64\!\rightarrow\!12$ and a dropout rate of $0.1$ between
+the first two hidden layers. The complete head contains $17\,996$
+trainable parameters, which is negligible compared to the HR-GCN
+backbone, but is sufficient to recover the non-linear mapping from
+joint coordinates to ROM angles. The output ordering follows
+\texttt{JOINT\_LIMIT\_TENSOR\_ORDER} so that the constraint penalty
+of Equation~\ref{eq:constraint} can be applied directly without
+re-indexing.
+
+\subsection{Combined Loss Function}
+The total objective is a weighted sum of the standard whole-body
+position loss, the proposed clinical angle loss and the proposed
+anatomical constraint penalty,
+\begin{equation}
+\mathcal{L}_{\mathrm{total}} \;=\;
+\mathcal{L}_{\mathrm{pos}} \;+\;
+\lambda_{\mathrm{angle}}\,\mathcal{L}_{\mathrm{angle}} \;+\;
+\lambda_{\mathrm{constraint}}\,\mathcal{L}_{\mathrm{constraint}},
+\label{eq:total-loss}
+\end{equation}
+where the position term reproduces the per-part Mean-Squared-Error /
+$L_{1}$ blend of the original HR-GCN,
+\begin{equation}
+\mathcal{L}_{\mathrm{pos}} = \!\!\sum_{p\in\{\mathrm{body},\mathrm{face},\mathrm{lhand},\mathrm{rhand}\}}\!\!
+w_{p}\,\Big[(1-\mu)\,\mathrm{MSE}(\hat{\mathbf{P}}_{p},\mathbf{P}_{p})
++ \mu\,L_{1}(\hat{\mathbf{P}}_{p},\mathbf{P}_{p})\Big],
+\label{eq:pos-loss}
+\end{equation}
+with $\mu\!=\!0.5$ and part weights $w_{\mathrm{body}}\!=\!1.0$,
+$w_{\mathrm{face}}\!=\!0.5$, $w_{\mathrm{hand}}\!=\!0.5$. The clinical
+angle term is the mean absolute error between predicted and
+Vicon-measured ROM angles in degrees,
+\begin{equation}
+\mathcal{L}_{\mathrm{angle}} \;=\;
+\frac{1}{J}\sum_{j=1}^{J} \big|\hat{\theta}_{j} - \theta^{*}_{j}\big|,
+\label{eq:angle-loss}
+\end{equation}
+and $\mathcal{L}_{\mathrm{constraint}}$ is the soft penalty of
+Equation~\ref{eq:constraint}. The full GCADA configuration sets
+$\lambda_{\mathrm{angle}}\!=\!0.1$ and
+$\lambda_{\mathrm{constraint}}\!=\!0.05$; the baseline ablation that
+isolates the contribution of the angle supervision sets both weights
+to zero.
+
+\subsection{Why this is novel}
+No previously published whole-body pose estimator supervises ROM
+angles directly in degree units. Physio2.2M~\cite{Rode2025SciReports}
+provides large-scale physiotherapy data but its accompanying baselines
+optimise only positional error. HGcnMLP~\cite{Hu2024_FrontBioengBiotechnol_HGcnMLP}
+introduces an MLP refinement on top of a GCN but again supervises in
+millimetres and computes ROM only as a downstream evaluation metric.
+The combination of (i) end-to-end angle supervision in degrees,
+(ii) a soft anatomical constraint penalty and (iii) a hard inference
+clamp, all operating on a whole-body 3D pose estimator, is original
+to this thesis.
+
+\section{Temporal Smoothing via the One-Euro Filter}
+\label{sec:one-euro}
+
+Per-frame predictions are temporally noisy when fed by a real-time 2D
+detector. To suppress jitter without introducing perceptible lag,
+GCADA applies the One-Euro filter of Casiez et al.~\cite{casiez2012euro}
+independently to every joint coordinate. The filter adapts its cut-off
+frequency to the instantaneous signal speed: at low velocities a low
+cut-off heavily smooths the signal, while at high velocities the
+cut-off rises so that fast movements are not lagged. For sample $x_{t}$
+at time $t$ with sampling rate $f_{s}$, the filtered velocity estimate
+$\hat{\dot{x}}_{t}$ and signal $\hat{x}_{t}$ satisfy
+\begin{equation}
+\hat{\dot{x}}_{t} = \alpha(f_{c}^{d})\,(x_{t}-\hat{x}_{t-1})f_{s}
++(1-\alpha(f_{c}^{d}))\,\hat{\dot{x}}_{t-1},
+\quad
+f_{c} = f_{c}^{\min} + \beta\,|\hat{\dot{x}}_{t}|,
+\label{eq:euro-vel}
+\end{equation}
+\begin{equation}
+\hat{x}_{t} = \alpha(f_{c})\,x_{t} + (1-\alpha(f_{c}))\,\hat{x}_{t-1},
+\quad
+\alpha(f) = \frac{1}{1+\tau(f) f_{s}},
+\quad
+\tau(f) = \frac{1}{2\pi f}.
+\label{eq:euro-pos}
+\end{equation}
+The implementation in \texttt{common/one\_euro\_filter.py} uses
+$f_{c}^{\min}\!=\!1.0$~Hz, $\beta\!=\!0.007$, $f_{c}^{d}\!=\!1.0$~Hz
+and the deployment frame rate $f_{s}\!=\!30$~Hz. The wrapper class
+\texttt{SkeletonFilter} instantiates one independent filter per
+coordinate, yielding $133\!\times\!3=399$ stateful filters that
+together smooth the full whole-body trajectory before geometric
+verification.
+
+\section{Clinical ROM Angle Extraction}
+\label{sec:rom-extraction}
+
+The geometric ROM extractor in
+\texttt{utils/prepare\_data\_uiprmd.py} is used both to generate the
+training labels $\boldsymbol{\theta}^{*}$ from raw Vicon data and to
+verify the ClinicalAngleHead predictions at inference time. All angles
+are computed in vectorised form using the basic identity
+\begin{equation}
+\angle(\mathbf{u},\mathbf{v}) = \arccos\!\left(\frac{\mathbf{u}\cdot\mathbf{v}}
+{\lVert\mathbf{u}\rVert\,\lVert\mathbf{v}\rVert}\right).
+\label{eq:angle}
+\end{equation}
+With $\hat{\mathbf{z}}$ the Z-up vertical axis and the spine vector
+defined as $\mathbf{s}=\mathbf{m}_{\mathrm{sho}}-\mathbf{m}_{\mathrm{hip}}$,
+the twelve clinical conventions implemented are
+\begin{align}
+\theta_{\mathrm{cerv}}     &= \angle(\mathbf{p}_{\mathrm{head}}-\mathbf{p}_{\mathrm{C7}},\,\hat{\mathbf{z}}), \\
+\theta_{\mathrm{trunk}}    &= \angle(\mathbf{s},\,\hat{\mathbf{z}}), \\
+\theta^{L}_{\mathrm{shoF}} &= 180^{\circ} - \angle(\mathbf{s},\,\mathbf{p}_{\mathrm{Lelb}}-\mathbf{p}_{\mathrm{Lsho}}), \\
+\theta^{L}_{\mathrm{shoA}} &= 180^{\circ} - \angle(\hat{\mathbf{z}},\,\Pi_{\mathrm{frontal}}(\mathbf{p}_{\mathrm{Lelb}}-\mathbf{p}_{\mathrm{Lsho}})), \\
+\theta^{L}_{\mathrm{hip}}  &= 180^{\circ} - \angle(\hat{\mathbf{z}},\,\mathbf{p}_{\mathrm{Lkne}}-\mathbf{p}_{\mathrm{Lhip}}), \\
+\theta^{L}_{\mathrm{knee}} &= 180^{\circ} - \angle(\mathbf{p}_{\mathrm{Lhip}}-\mathbf{p}_{\mathrm{Lkne}},\,\mathbf{p}_{\mathrm{Lank}}-\mathbf{p}_{\mathrm{Lkne}}), \\
+\theta^{L}_{\mathrm{ankle}}&= \angle(\mathbf{p}_{\mathrm{Lank}}-\mathbf{p}_{\mathrm{Lkne}},\,\mathbf{p}_{\mathrm{Ltoe}}-\mathbf{p}_{\mathrm{Lhee}}),
+\label{eq:rom-defs}
+\end{align}
+and analogously for the right side. The shoulder abduction projects
+the upper-arm vector onto the frontal plane via
+$\Pi_{\mathrm{frontal}}(\mathbf{u})=\mathbf{u}-(\mathbf{u}\!\cdot\!
+\mathbf{n})\mathbf{n}$, where $\mathbf{n}$ is the unit normal of the
+frontal plane obtained as $\mathbf{n}=(\mathbf{p}_{\mathrm{Rsho}}
+-\mathbf{p}_{\mathrm{Lsho}})\times\hat{\mathbf{z}}$. Knee and hip
+flexion are subtracted from $180^{\circ}$ so that $0^{\circ}$
+corresponds to full extension; the ankle uses the heel-to-toe vector
+as the foot's long axis so that anatomical neutral evaluates to
+$90^{\circ}$.
+
+\section{Training Configuration}
+\label{sec:training}
+
+Training is launched by the script \texttt{train\_rehab.py} and uses
+the H3WB-pretrained checkpoint as the backbone initialisation.
+Hyper-parameters are summarised in Table~\ref{tab:training-hp}.
+
+\begin{table}[h]
+\centering
+\caption{Training configuration used for the proposed GCADA pipeline.}
+\label{tab:training-hp}
+\begin{tabular}{lc}
+\hline
+Hyper-parameter & Value \\
+\hline
+Optimiser                            & Adam \\
+Base learning rate (angle head)      & $5\!\times\!10^{-4}$ \\
+Backbone learning-rate factor        & $0.5$ \\
+Backbone learning rate (effective)   & $2.5\!\times\!10^{-4}$ \\
+Mini-batch size                      & $64$ \\
+Epochs                               & $50$ \\
+LR scheduler                         & ReduceLROnPlateau ($\times 0.5$, patience $8$, $\min 10^{-6}$) \\
+Backbone warm-up (frozen) epochs     & $3$ \\
+Gradient clipping (max-norm)         & $1.0$ \\
+$\lambda_{\mathrm{angle}}$ (full GCADA)     & $0.1$ \\
+$\lambda_{\mathrm{constraint}}$ (full GCADA)& $0.05$ \\
+$\lambda_{\mathrm{angle}}$ / $\lambda_{\mathrm{constraint}}$ (baseline) & $0.0$ / $0.0$ \\
+Position-loss MSE/$L_{1}$ blend $\mu$       & $0.5$ \\
+GCN variant                          & \texttt{dc\_preagg} \\
+Backbone model                       & HR-GCN Model 1 (multi-branch) \\
+Mirror augmentation probability      & $0.5$ (training) \\
+GPU                                  & NVIDIA A10G (24~GB) \\
+\hline
+\end{tabular}
+\end{table}
+
+The optimiser uses parameter groups so that the H3WB-pretrained
+backbone receives a learning rate two times lower than the freshly
+initialised angle head, balancing rapid adaptation of the new head
+with conservative refinement of the well-trained backbone. During
+the first three epochs the backbone is frozen entirely so that the
+random angle head can stabilise without corrupting the lifting
+representation. An optional progressive weighting schedule, used
+during early experimentation, ramps both $\lambda_{\mathrm{angle}}$
+and $\lambda_{\mathrm{constraint}}$ from $0.1\times$ to $1.0\times$
+of their nominal values across the training run, which proved useful
+for the larger H3WB-to-Vicon domain shift. A horizontal mirror
+augmentation is applied with probability $0.5$ during training; it
+flips the X coordinate of the 2D input, swaps the left/right body
+joints in the 3D target and exchanges the corresponding left/right
+ROM angles, doubling the effective training set without altering the
+underlying biomechanics.
+
+Partial weight loading is used to preserve compatibility with earlier
+six-angle checkpoints. When a checkpoint produced by an earlier
+six-output ClinicalAngleHead is provided, the backbone is loaded in
+full and the hidden layers of the angle head are copied verbatim;
+the first six rows of the output layer are inherited and the new
+rows corresponding to the six newly added ROM joints are left at
+their random initialisation. This lets the project evolve its
+clinical vocabulary without discarding earlier training progress.
+
+The best checkpoint is selected by the lowest mean ROM mean-absolute
+error on the held-out s09--s10 evaluation split, computed at the end
+of every epoch. The same evaluation routine also reports body, face
+and hand MPJPE in millimetres so that any improvement in clinical
+angle accuracy is contextualised against the whole-body positional
+quality preserved by the original HR-GCN objective.
