@@ -34,3 +34,5 @@ python stgcn_seq_quality.py \
     --epochs_reg 2000 \
     --save_model results/stgcn_seq_final_6.pt \
     --save_csv   results/stgcn_seq_final_results_6.csv
+
+    
