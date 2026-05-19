@@ -1,0 +1,8 @@
+metric,value
+ec_acc,40.07
+vc_acc,39.33
+avg_mad,0.0714
+avg_rmse,0.1102
+avg_mape,12.1163
+stgcn_seq_mad,0.054
+improvement_pct,-32.3

@@ -29,8 +29,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.mixture import GaussianMixture
+from tqdm import tqdm
 
 # ── ROM angle definitions ──────────────────────────────────────────────────
 # 12 ROM angles (from prepare_data_uiprmd.py):
@@ -470,12 +471,18 @@ def _build_items_from_arrays(sequences, lengths, exercise_ids, quality_scores,
 
 # ── Training helpers ───────────────────────────────────────────────────────
 
-def _run_epoch_ec(model, loader, optimizer, device, train: bool):
+def _run_epoch_ec(model, loader, optimizer, device, train: bool,
+                  epoch: int = None, total_epochs: int = None):
     model.train(train)
     ce = nn.CrossEntropyLoss()
     total_loss, correct, total = 0.0, 0, 0
     with torch.set_grad_enabled(train):
-        for batch in loader:
+        if train and epoch is not None:
+            desc = f"EC [{epoch+1:3d}/{total_epochs}]"
+            pbar = tqdm(loader, desc=desc, leave=False, ncols=80)
+        else:
+            pbar = loader
+        for batch in pbar:
             poses = batch['poses'].to(device)
             ex_id = batch['exercise_id'].to(device)
             logits, _, _ = model(poses, ex_id)
@@ -487,15 +494,24 @@ def _run_epoch_ec(model, loader, optimizer, device, train: bool):
             total_loss += loss.item() * len(ex_id)
             correct += (logits.argmax(1) == ex_id).sum().item()
             total += len(ex_id)
+            if train and epoch is not None:
+                pbar.set_postfix({'loss': f'{loss.item():.4f}',
+                                  'acc':  f'{correct/total:.1%}'})
     return total_loss / total, correct / total
 
 
-def _run_epoch_vc(model, loader, optimizer, device, train: bool):
+def _run_epoch_vc(model, loader, optimizer, device, train: bool,
+                  epoch: int = None, total_epochs: int = None):
     model.train(train)
     ce = nn.CrossEntropyLoss()
     total_loss, correct, total = 0.0, 0, 0
     with torch.set_grad_enabled(train):
-        for batch in loader:
+        if train and epoch is not None:
+            desc = f"VC [{epoch+1:3d}/{total_epochs}]"
+            pbar = tqdm(loader, desc=desc, leave=False, ncols=80)
+        else:
+            pbar = loader
+        for batch in pbar:
             poses    = batch['poses'].to(device)
             ex_id    = batch['exercise_id'].to(device)
             validity = batch['validity'].to(device)
@@ -508,14 +524,23 @@ def _run_epoch_vc(model, loader, optimizer, device, train: bool):
             total_loss += loss.item() * len(validity)
             correct += (v_logits.argmax(1) == validity).sum().item()
             total += len(validity)
+            if train and epoch is not None:
+                pbar.set_postfix({'loss': f'{loss.item():.4f}',
+                                  'acc':  f'{correct/total:.1%}'})
     return total_loss / total, correct / total
 
 
-def _run_epoch_reg(model, loader, optimizer, device, train: bool):
+def _run_epoch_reg(model, loader, optimizer, device, train: bool,
+                   epoch: int = None, total_epochs: int = None):
     model.train(train)
     total_loss, total = 0.0, 0
     with torch.set_grad_enabled(train):
-        for batch in loader:
+        if train and epoch is not None:
+            desc = f"QR [{epoch+1:3d}/{total_epochs}]"
+            pbar = tqdm(loader, desc=desc, leave=False, ncols=80)
+        else:
+            pbar = loader
+        for batch in pbar:
             poses = batch['poses'].to(device)
             ex_id = batch['exercise_id'].to(device)
             qs    = batch['quality_score'].to(device)
@@ -527,6 +552,8 @@ def _run_epoch_reg(model, loader, optimizer, device, train: bool):
                 optimizer.step()
             total_loss += loss.item() * len(qs)
             total += len(qs)
+            if train and epoch is not None:
+                pbar.set_postfix({'loss': f'{loss.item():.4f}'})
     return total_loss / total
 
 
@@ -618,10 +645,58 @@ def main():
         d_tr = np.load(args.train_npz, allow_pickle=True)
         d_te = np.load(args.test_npz,  allow_pickle=True)
 
-        seqs_all   = np.concatenate([d_tr['sequences'],      d_te['sequences']],      axis=0)
-        lens_all   = np.concatenate([d_tr['lengths'],        d_te['lengths']])
-        ex_all     = np.concatenate([d_tr['exercise_ids'],   d_te['exercise_ids']])
-        qlabel_all = np.concatenate([d_tr['quality_labels'], d_te['quality_labels']])
+        # Combine raw frame-level data from both NPZ files
+        rom_frames = np.concatenate([d_tr['rom_angles'],    d_te['rom_angles']],    axis=0)
+        ex_frames  = np.concatenate([d_tr['exercise_ids'],  d_te['exercise_ids']],  axis=0)
+        sub_frames = np.concatenate([d_tr['subject_ids'],   d_te['subject_ids']],   axis=0)
+        ql_frames  = np.concatenate([d_tr['quality_labels'],d_te['quality_labels']], axis=0)
+
+        # Sliding-window sequence extraction
+        # Each (subject, exercise, quality) group is sliced into windows of
+        # WINDOW_SIZE frames (= M) with STRIDE overlap; windows shorter than
+        # MIN_LEN frames are discarded.
+        WINDOW_SIZE = args.M   # 100  (paper value)
+        STRIDE      = 50       # 50% overlap
+        MIN_LEN     = 50       # drop tail windows shorter than this
+
+        seqs_list, lens_list, ex_list, qlabel_list = [], [], [], []
+        i, N_frames = 0, len(rom_frames)
+        while i < N_frames:
+            # find end of this (subject, exercise, quality) run
+            j = i + 1
+            while (j < N_frames
+                   and sub_frames[j] == sub_frames[i]
+                   and ex_frames[j]  == ex_frames[i]
+                   and ql_frames[j]  == ql_frames[i]):
+                j += 1
+            group  = rom_frames[i:j]   # (T_group, 12)
+            T_grp  = j - i
+            eid    = int(ex_frames[i])
+            ql_val = int(ql_frames[i])
+
+            # slide window across this group
+            start = 0
+            while start < T_grp:
+                win = group[start:start + WINDOW_SIZE]
+                win_len = len(win)
+                if win_len >= MIN_LEN:
+                    seqs_list.append(win)
+                    lens_list.append(win_len)
+                    ex_list.append(eid)
+                    qlabel_list.append(ql_val)
+                start += STRIDE
+
+            i = j
+
+        N_seqs     = len(seqs_list)
+        seqs_all   = np.zeros((N_seqs, WINDOW_SIZE, ROM_J), dtype=np.float32)
+        for k, seg in enumerate(seqs_list):
+            seqs_all[k, :len(seg)] = seg
+        lens_all   = np.array(lens_list,   dtype=np.int64)
+        ex_all     = np.array(ex_list,     dtype=np.int64)
+        qlabel_all = np.array(qlabel_list, dtype=np.int64)
+        print(f"  Built {N_seqs} windows from {N_frames} frames "
+              f"(window={WINDOW_SIZE}, stride={STRIDE}, min_len={MIN_LEN})")
 
         if args.use_gmm_scores:
             print("Computing GMM scores on combined data …")
@@ -744,11 +819,12 @@ def main():
     opt_ec      = torch.optim.Adam(model.parameters(), lr=args.lr)
     best_ec_acc = 0.0
     for epoch in range(args.epochs_ec):
-        tr_loss, tr_acc = _run_epoch_ec(model, dl_train_ec, opt_ec, device, train=True)
-        va_loss, va_acc = _run_epoch_ec(model, dl_val,      opt_ec, device, train=False)
-        if (epoch + 1) % max(1, args.epochs_ec // 5) == 0 or epoch == 0:
+        tr_loss, tr_acc = _run_epoch_ec(model, dl_train_ec, opt_ec, device, train=True,
+                                        epoch=epoch, total_epochs=args.epochs_ec)
+        va_loss, va_acc = _run_epoch_ec(model, dl_val, opt_ec, device, train=False)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f"  EC [{epoch+1:3d}/{args.epochs_ec}] "
-                  f"train loss={tr_loss:.4f} acc={tr_acc*100:.1f}%  "
+                  f"loss={tr_loss:.4f} acc={tr_acc*100:.1f}% | "
                   f"val loss={va_loss:.4f} acc={va_acc*100:.1f}%")
         if va_acc > best_ec_acc:
             best_ec_acc = va_acc
@@ -763,11 +839,12 @@ def main():
     opt_vc      = torch.optim.Adam(model.parameters(), lr=args.lr)
     best_vc_acc = 0.0
     for epoch in range(args.epochs_vc):
-        tr_loss, tr_acc = _run_epoch_vc(model, dl_train_vc, opt_vc, device, train=True)
-        va_loss, va_acc = _run_epoch_vc(model, dl_val,      opt_vc, device, train=False)
-        if (epoch + 1) % max(1, args.epochs_vc // 5) == 0 or epoch == 0:
+        tr_loss, tr_acc = _run_epoch_vc(model, dl_train_vc, opt_vc, device, train=True,
+                                        epoch=epoch, total_epochs=args.epochs_vc)
+        va_loss, va_acc = _run_epoch_vc(model, dl_val, opt_vc, device, train=False)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f"  VC [{epoch+1:3d}/{args.epochs_vc}] "
-                  f"train loss={tr_loss:.4f} acc={tr_acc*100:.1f}%  "
+                  f"loss={tr_loss:.4f} acc={tr_acc*100:.1f}% | "
                   f"val loss={va_loss:.4f} acc={va_acc*100:.1f}%")
         if va_acc > best_vc_acc:
             best_vc_acc = va_acc
@@ -798,11 +875,12 @@ def main():
 
     best_val_mad = float('inf')
     for epoch in range(args.epochs_reg):
-        tr_loss = _run_epoch_reg(model, dl_train_ec, opt_reg, device, train=True)
-        va_loss = _run_epoch_reg(model, dl_val,      opt_reg, device, train=False)
-        if (epoch + 1) % max(1, args.epochs_reg // 10) == 0 or epoch == 0:
+        tr_loss = _run_epoch_reg(model, dl_train_ec, opt_reg, device, train=True,
+                                 epoch=epoch, total_epochs=args.epochs_reg)
+        va_loss = _run_epoch_reg(model, dl_val, opt_reg, device, train=False)
+        if (epoch + 1) % 10 == 0 or epoch == 0:
             print(f"  QR [{epoch+1:3d}/{args.epochs_reg}] "
-                  f"train L1={tr_loss:.4f}  val L1={va_loss:.4f}")
+                  f"loss={tr_loss:.4f} val_mad={va_loss:.4f}")
         if va_loss < best_val_mad:
             best_val_mad = va_loss
             torch.save({'model_state_dict': model.state_dict(),
