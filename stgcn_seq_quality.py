@@ -13,6 +13,13 @@ Training stages:
   Stage 1 — EC alone
   Stage 2 — VC alone  (with invalid sequences = randomly cropped originals)
   Stage 3 — QR (backbone fine-tuned, EC/VC can be frozen)
+
+Data format (uiprmd_quality_*.npz):
+  sequences     : (N, T_max, 12)  ROM angles in degrees, zero-padded
+  lengths       : (N,)            actual frame counts
+  quality_labels: (N,)            binary 0/1
+  exercise_ids  : (N,)            0-9
+  subject_ids   : (N,)            0-indexed
 """
 
 import argparse
@@ -23,28 +30,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from scipy.interpolate import interp1d
+from sklearn.mixture import GaussianMixture
 
-# ── Joint selection ────────────────────────────────────────────────────────
-# 19 non-zero joints in the 133-joint COCO-WholeBody format that come from
-# Vicon data.  We keep 17 by dropping small-toe proxies (indices 18, 21).
-ACTIVE_JOINTS = [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 20, 22]
-# Local indices (0-16) after selection:
-#  0:head  1:l_sho  2:r_sho  3:l_elb  4:r_elb  5:l_wri  6:r_wri
-#  7:l_hip  8:r_hip  9:l_kne  10:r_kne  11:l_ank  12:r_ank
-#  13:l_bigtoe  14:l_heel  15:r_bigtoe  16:r_heel
+# ── ROM angle definitions ──────────────────────────────────────────────────
+# 12 ROM angles (from prepare_data_uiprmd.py):
+#  0:cerv_pitch  1:trunk_flex
+#  2:l_sho_flex  3:r_sho_flex  4:l_sho_abd  5:r_sho_abd
+#  6:l_hip       7:r_hip
+#  8:l_knee      9:r_knee
+# 10:l_ankle    11:r_ankle
+ROM_J = 12  # number of ROM angle nodes
 
-SKELETON_EDGES = [
-    (0, 1), (0, 2),         # head – shoulders
-    (1, 2),                 # shoulder bar
-    (1, 3), (3, 5),         # left arm
-    (2, 4), (4, 6),         # right arm
-    (1, 7), (2, 8),         # torso sides
-    (7, 8),                 # hip bar
-    (7, 9), (9, 11),        # left leg
-    (11, 13), (11, 14),     # left foot
-    (8, 10), (10, 12),      # right leg
-    (12, 15), (12, 16),     # right foot
+ROM_EDGES = [
+    (0, 1),            # cervical - trunk
+    (1, 2), (1, 3),    # trunk - shoulder flex (L/R)
+    (2, 4), (3, 5),    # shoulder flex - abduction (same side)
+    (2, 3), (4, 5),    # bilateral shoulders
+    (1, 6), (1, 7),    # trunk - hips
+    (6, 7),            # bilateral hips
+    (6, 8), (7, 9),    # hip - knee
+    (8, 9),            # bilateral knees
+    (8, 10), (9, 11),  # knee - ankle
+    (10, 11),          # bilateral ankles
 ]
 
 EXERCISE_NAMES = [
@@ -52,6 +59,8 @@ EXERCISE_NAMES = [
 ]
 
 PAPER_MAD = [0.006, 0.008, 0.009, 0.006, 0.003, 0.004, 0.009, 0.013, 0.006, 0.028]
+
+ROM_NORM = 180.0  # divide angles by this to get [0, 1] range
 
 
 # ── Graph helpers ──────────────────────────────────────────────────────────
@@ -78,18 +87,21 @@ def gaussian_adjacency(M: int, sigma: float = 10.0) -> torch.Tensor:
 
 class SpatialGCN(nn.Module):
     """
-    Per-exercise learnable adjacency GCN over joints.
+    Per-exercise learnable adjacency GCN over joints/angle nodes.
     Input:  (B, J, in_dim)
     Output: (B, J, hidden_dim)
     """
     def __init__(self, in_dim: int, hidden_dim: int, J: int,
-                 n_exercises: int = 10, n_layers: int = 2):
+                 n_exercises: int = 10, n_layers: int = 2,
+                 edges=None):
         super().__init__()
+        if edges is None:
+            edges = ROM_EDGES
         self.n_exercises = n_exercises
         self.n_layers = n_layers
         self.hidden_dim = hidden_dim
 
-        A_init = torch.FloatTensor(build_adjacency(J, SKELETON_EDGES))
+        A_init = torch.FloatTensor(build_adjacency(J, edges))
         self.A_spatial = nn.ParameterList(
             [nn.Parameter(A_init.clone()) for _ in range(n_exercises)]
         )
@@ -111,10 +123,10 @@ class SpatialGCN(nn.Module):
                 mask = (exercise_id == eid)
                 if mask.sum() == 0:
                     continue
-                A = torch.softmax(self.A_spatial[eid], dim=-1)  # (J, J)
-                h = out[mask]                                    # (n, J, C)
-                h = torch.einsum('ij,njc->nic', A, h)           # (n, J, C)
-                h = self.W[k](h)                                # (n, J, hidden)
+                A = torch.softmax(self.A_spatial[eid], dim=-1)
+                h = out[mask]
+                h = torch.einsum('ij,njc->nic', A, h)
+                h = self.W[k](h)
                 result[mask] = h
             out = F.relu(self.bn[k](result))
         return out
@@ -145,34 +157,40 @@ class TemporalGCN(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, M, _ = x.shape
         out = x
-        A = torch.softmax(self.A_temporal, dim=-1)  # (M, M)
+        A = torch.softmax(self.A_temporal, dim=-1)
         for k in range(self.n_layers):
-            out = torch.einsum('ij,bjc->bic', A, out)  # (B, M, C)
-            out = self.W[k](out)                        # (B, M, hidden)
+            out = torch.einsum('ij,bjc->bic', A, out)
+            out = self.W[k](out)
             out = F.relu(self.bn[k](out))
-        out = out.mean(dim=1)   # (B, hidden_dim)
+        out = out.mean(dim=1)
         return out
 
 
 class STGCNBackbone(nn.Module):
-    def __init__(self, J: int = 17, hidden_dim: int = 64, M: int = 100,
-                 n_exercises: int = 10):
+    """
+    Spatial-temporal GCN backbone.
+    Input x: (B, M, J, C)  where J=ROM_J=12, C=1 for ROM angle data.
+    """
+    def __init__(self, J: int = ROM_J, in_dim: int = 1,
+                 hidden_dim: int = 64, M: int = 100,
+                 n_exercises: int = 10, edges=None):
         super().__init__()
         self.J = J
+        self.in_dim = in_dim
         self.hidden_dim = hidden_dim
         self.M = M
 
-        self.spatial_gcn = SpatialGCN(3, hidden_dim, J, n_exercises)
+        self.spatial_gcn  = SpatialGCN(in_dim, hidden_dim, J, n_exercises, edges=edges)
         self.temporal_gcn = TemporalGCN(J * hidden_dim, hidden_dim, M)
 
     def forward(self, x: torch.Tensor, exercise_id: torch.Tensor) -> torch.Tensor:
-        # x: (B, M, J, 3)
+        # x: (B, M, J, C)
         B, M, J, C = x.shape
         x_flat = x.reshape(B * M, J, C)
         ex_rep = exercise_id.unsqueeze(1).expand(B, M).reshape(B * M)
-        sp_out = self.spatial_gcn(x_flat, ex_rep)                    # (B*M, J, hidden)
+        sp_out = self.spatial_gcn(x_flat, ex_rep)          # (B*M, J, hidden)
         tmp_in = sp_out.reshape(B, M, J * self.hidden_dim)
-        feat = self.temporal_gcn(tmp_in)                             # (B, hidden)
+        feat   = self.temporal_gcn(tmp_in)                 # (B, hidden)
         return feat
 
 
@@ -209,17 +227,18 @@ class QualityHead(nn.Module):
         )
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        return self.fc(feat)  # (B, 1)
+        return self.fc(feat)
 
 
 class STGCNSeq(nn.Module):
-    def __init__(self, J: int = 17, hidden_dim: int = 64, M: int = 100,
-                 n_exercises: int = 10):
+    def __init__(self, J: int = ROM_J, in_dim: int = 1,
+                 hidden_dim: int = 64, M: int = 100,
+                 n_exercises: int = 10, edges=None):
         super().__init__()
-        self.backbone = STGCNBackbone(J, hidden_dim, M, n_exercises)
-        self.exercise_clf = ExerciseClassifier(hidden_dim, n_exercises)
-        self.validity_clf = ValidityClassifier(hidden_dim)
-        self.quality_head = QualityHead(hidden_dim)
+        self.backbone      = STGCNBackbone(J, in_dim, hidden_dim, M, n_exercises, edges)
+        self.exercise_clf  = ExerciseClassifier(hidden_dim, n_exercises)
+        self.validity_clf  = ValidityClassifier(hidden_dim)
+        self.quality_head  = QualityHead(hidden_dim)
 
     def forward(self, x: torch.Tensor, exercise_id: torch.Tensor):
         feat = self.backbone(x, exercise_id)
@@ -230,125 +249,223 @@ class STGCNSeq(nn.Module):
         )
 
 
-# ── Dataset ────────────────────────────────────────────────────────────────
+# ── Sequence helpers ───────────────────────────────────────────────────────
 
-def _resize_sequence(poses: np.ndarray, target_len: int) -> np.ndarray:
-    T, J, C = poses.shape
+def _resize_sequence(seq: np.ndarray, target_len: int) -> np.ndarray:
+    """Linearly interpolate sequence (T, F) to (target_len, F)."""
+    T, F = seq.shape
     if T == target_len:
-        return poses
+        return seq
     x_old = np.linspace(0.0, 1.0, T)
     x_new = np.linspace(0.0, 1.0, target_len)
-    out = np.empty((target_len, J, C), dtype=poses.dtype)
-    for j in range(J):
-        for c in range(C):
-            out[:, j, c] = np.interp(x_new, x_old, poses[:, j, c])
+    out = np.empty((target_len, F), dtype=seq.dtype)
+    for f in range(F):
+        out[:, f] = np.interp(x_new, x_old, seq[:, f])
     return out
 
 
-def _augment(poses: np.ndarray, M: int) -> np.ndarray:
-    T, J, C = poses.shape
-    # Speed augmentation
+def _augment_rom(seq: np.ndarray, M: int) -> np.ndarray:
+    """Speed augmentation (random frame drop/repeat) + small Gaussian noise."""
+    T, F = seq.shape
     L = np.random.randint(0, max(1, int(0.25 * T)) + 1)
     if L > 0:
         if np.random.random() < 0.5:
-            extra_idx = np.random.choice(T, L, replace=False)
-            poses = np.concatenate([poses, poses[extra_idx]], axis=0)
+            extra = np.random.choice(T, L, replace=False)
+            seq = np.concatenate([seq, seq[extra]], axis=0)
         else:
             keep = np.sort(np.random.choice(T, max(2, T - L), replace=False))
-            poses = poses[keep]
-    poses = _resize_sequence(poses, M)
-    # Rotation around vertical (Z) axis
-    angle = np.random.uniform(-15.0, 15.0) * math.pi / 180.0
-    ca, sa = math.cos(angle), math.sin(angle)
-    R = np.array([[ca, -sa, 0], [sa, ca, 0], [0, 0, 1]], dtype=np.float32)
-    poses = poses.reshape(-1, 3) @ R.T
-    return poses.reshape(M, J, C)
+            seq = seq[keep]
+    seq = _resize_sequence(seq, M)
+    seq = seq + np.random.randn(*seq.shape).astype(np.float32) * 0.005
+    return seq
 
 
-def _build_invalid(poses: np.ndarray) -> np.ndarray:
-    T = len(poses)
+def _build_invalid_seq(seq: np.ndarray) -> np.ndarray:
+    """Return a random crop (25-75 %) to simulate an invalid (truncated) sequence."""
+    T = len(seq)
     p = np.random.uniform(0.25, 0.75)
     crop_len = max(2, int(p * T))
     start = np.random.randint(0, max(1, T - crop_len))
-    return poses[start: start + crop_len]
+    return seq[start: start + crop_len]
 
+
+# ── GMM quality scoring ────────────────────────────────────────────────────
+
+def _compute_gmm_from_arrays(rom_means, exercise_ids, quality_labels,
+                              print_table=True):
+    """
+    Fit per-exercise GMM on correct-sequence mean ROM angles; score all sequences.
+    rom_means   : (N, 12) — mean ROM angles per sequence
+    exercise_ids: (N,)
+    quality_labels: (N,)  binary 0/1
+    Returns quality_scores (N,) float32 in [0, 1].
+    """
+    N = len(rom_means)
+    scores = np.zeros(N, dtype=np.float32)
+
+    if print_table:
+        print("\n=== GMM Score Separation ===")
+        print(f"{'Exercise':<10}{'Correct_mean':>14}{'Incorrect_mean':>16}{'Gap':>8}")
+
+    gaps = []
+    for e in range(10):
+        mask_correct   = (exercise_ids == e) & (quality_labels == 1)
+        mask_incorrect = (exercise_ids == e) & (quality_labels == 0)
+        mask_all       = (exercise_ids == e)
+
+        if mask_correct.sum() < 2:
+            if mask_all.sum() > 0:
+                scores[mask_all] = 0.5
+            if print_table:
+                print(f"Ex{e+1:02d}{'':6} {'N/A':>14} {'N/A':>16} {'N/A':>8}")
+            continue
+
+        gmm = GaussianMixture(
+            n_components=2, covariance_type='diag',
+            random_state=42, max_iter=200
+        )
+        gmm.fit(rom_means[mask_correct])
+
+        ll = gmm.score_samples(rom_means[mask_all])
+        ll_min, ll_max = ll.min(), ll.max()
+        scores[mask_all] = ((ll - ll_min) / (ll_max - ll_min + 1e-8)).astype(np.float32)
+
+        if print_table:
+            c_mean = float(scores[mask_correct].mean()) if mask_correct.sum() > 0 else float('nan')
+            i_mean = float(scores[mask_incorrect].mean()) if mask_incorrect.sum() > 0 else float('nan')
+            if not (np.isnan(c_mean) or np.isnan(i_mean)):
+                gap = c_mean - i_mean
+                gaps.append(gap)
+                gap_str = f"{gap:.3f}"
+            else:
+                gap_str = "N/A"
+            print(f"Ex{e+1:02d}{'':6} {c_mean:>14.3f} {i_mean:>16.3f} {gap_str:>8}")
+
+    if print_table:
+        avg_gap = float(np.mean(gaps)) if gaps else 0.0
+        print(f"{'AVERAGE':<10}{'':>14}{'':>16}{avg_gap:>8.3f}")
+        if avg_gap > 0.1:
+            print("Good separation: Gap > 0.1")
+        elif avg_gap < 0.05:
+            print("Poor separation: Gap < 0.05")
+
+    return scores
+
+
+def compute_gmm_scores(npz_path):
+    """
+    Compute GMM-based quality scores for a single quality NPZ file.
+    Returns (N,) float32 scores in [0, 1].
+    """
+    d = np.load(npz_path, allow_pickle=True)
+    sequences      = d['sequences']          # (N, T_max, 12)
+    exercise_ids   = d['exercise_ids']
+    quality_labels = d['quality_labels']
+    rom_means      = sequences.mean(axis=1)  # (N, 12) — temporal mean per sequence
+    return _compute_gmm_from_arrays(rom_means, exercise_ids, quality_labels,
+                                    print_table=True)
+
+
+# ── Dataset ────────────────────────────────────────────────────────────────
 
 class UIPromdSeqDataset(Dataset):
     """
-    Builds one sequence per (subject, exercise, quality_label) triplet.
-    Optionally appends cropped (invalid) sequences for VC training.
+    Loads pre-built ROM angle sequences from a quality NPZ file.
+
+    NPZ keys expected:
+      sequences     (N, T_max, 12)  ROM angles in degrees
+      lengths       (N,)            actual frame counts per sequence
+      quality_labels(N,)            binary 0=incorrect, 1=correct
+      exercise_ids  (N,)
+      subject_ids   (N,)
+
+    Each item: (seq_resized: (M, 12, 1), eid, quality_score, validity)
+    validity: 0=real sequence, 1=synthetically cropped (for VC training)
     """
 
-    def __init__(self, npz_path: str, M: int = 100,
-                 active_joints=None,
+    def __init__(self, npz_path: str = None, M: int = 100,
                  augment: bool = False,
                  val_subject: int = None,
                  is_val: bool = False,
                  include_invalid: bool = False,
-                 seed: int = 42):
-        if active_joints is None:
-            active_joints = ACTIVE_JOINTS
+                 seed: int = 42,
+                 _prebuilt_items=None,
+                 ext_quality_scores=None):
         self.M = M
         self.augment = augment
-        self.J = len(active_joints)
 
-        rng = np.random.default_rng(seed)
+        if _prebuilt_items is not None:
+            self._items = list(_prebuilt_items)
+            return
 
         d = np.load(npz_path, allow_pickle=True)
-        poses_3d    = d['poses_3d'][:, active_joints, :]   # (N, J, 3)
-        subject_ids = d['subject_ids']
-        exercise_ids = d['exercise_ids']
+        sequences      = d['sequences']           # (N, T_max, 12)
+        lengths        = d['lengths']             # (N,)
+        exercise_ids   = d['exercise_ids']
+        subject_ids    = d['subject_ids']
         quality_labels = d['quality_labels']
-        quality_scores = d['quality_scores']
+
+        if ext_quality_scores is not None:
+            quality_scores = ext_quality_scores
+        else:
+            quality_scores = quality_labels.astype(np.float32)
 
         # Subject split
         if val_subject is not None:
             keep = (subject_ids == val_subject) if is_val else (subject_ids != val_subject)
-            poses_3d    = poses_3d[keep]
-            subject_ids = subject_ids[keep]
-            exercise_ids = exercise_ids[keep]
-            quality_labels = quality_labels[keep]
+            sequences      = sequences[keep]
+            lengths        = lengths[keep]
+            exercise_ids   = exercise_ids[keep]
             quality_scores = quality_scores[keep]
 
-        # Local indices of hip joints (for first-frame centering)
-        hip_l = active_joints.index(11) if 11 in active_joints else 0
-        hip_r = active_joints.index(12) if 12 in active_joints else 0
-
-        self._items = []  # list of (poses_M_J_3, exercise_id, quality_score, validity_label)
-
-        combos = sorted(set(zip(subject_ids.tolist(),
-                               exercise_ids.tolist(),
-                               quality_labels.tolist())))
-        for (sid, eid, qlabel) in combos:
-            mask = (subject_ids == sid) & (exercise_ids == eid) & (quality_labels == qlabel)
-            raw = poses_3d[mask].copy()          # (T, J, 3)
-            qs  = float(quality_scores[mask][0]) # binary 0.0 or 1.0
-
-            # Normalize: subtract first-frame hip midpoint
-            spine = (raw[0, hip_l] + raw[0, hip_r]) / 2.0
-            raw -= spine[np.newaxis, np.newaxis, :]
-
-            proc = _resize_sequence(raw, M).astype(np.float32)
-            self._items.append((proc, eid, qs, 0))  # 0 = valid
-
-            if include_invalid:
-                inv_raw = _build_invalid(raw)
-                inv_proc = _resize_sequence(inv_raw, M).astype(np.float32)
-                self._items.append((inv_proc, eid, qs, 1))  # 1 = invalid
+        self._items = _build_items_from_arrays(
+            sequences, lengths, exercise_ids, quality_scores,
+            M, include_invalid=include_invalid)
 
     def __len__(self):
         return len(self._items)
 
     def __getitem__(self, idx):
-        poses, eid, qs, validity = self._items[idx]
+        seq, eid, qs, validity = self._items[idx]
         if self.augment:
-            poses = _augment(poses.copy(), self.M)
+            seq = _augment_rom(seq.copy(), self.M)  # (M, 12)
+        # reshape to (M, 12, 1) for SpatialGCN (J=12, C=1)
+        poses = torch.from_numpy(seq.reshape(self.M, ROM_J, 1))
         return {
-            'poses':         torch.from_numpy(poses),
+            'poses':         poses,
             'exercise_id':   torch.tensor(eid,      dtype=torch.long),
             'quality_score': torch.tensor([qs],     dtype=torch.float32),
             'validity':      torch.tensor(validity, dtype=torch.long),
         }
+
+
+def _build_items_from_arrays(sequences, lengths, exercise_ids, quality_scores,
+                              M, include_invalid=False):
+    """
+    Build (seq, eid, qs, validity) tuples from quality-NPZ arrays.
+    sequences     : (N, T_max, 12)
+    lengths       : (N,)
+    exercise_ids  : (N,)
+    quality_scores: (N,)
+    Returns list of (ndarray(M,12), int, float, int).
+    """
+    items = []
+    N = len(sequences)
+    for i in range(N):
+        T = int(lengths[i])
+        raw = sequences[i, :T, :].copy().astype(np.float32)
+        raw /= ROM_NORM  # normalise to [0, 1]
+        proc = _resize_sequence(raw, M)
+        qs   = float(quality_scores[i])
+        eid  = int(exercise_ids[i])
+        items.append((proc, eid, qs, 0))  # 0 = valid
+
+        if include_invalid:
+            inv_raw  = _build_invalid_seq(raw)
+            inv_proc = _resize_sequence(inv_raw, M)
+            items.append((inv_proc, eid, qs, 1))  # 1 = invalid
+
+    return items
 
 
 # ── Training helpers ───────────────────────────────────────────────────────
@@ -456,21 +573,26 @@ def evaluate_quality(model, loader, device, n_exercises: int = 10):
 
 def parse_args():
     p = argparse.ArgumentParser(description="STGCN-Seq quality assessment on UI-PRMD")
-    p.add_argument('--train_npz',  default='data/uiprmd_quality_train.npz')
-    p.add_argument('--test_npz',   default='data/uiprmd_quality_test.npz')
-    p.add_argument('--n_joints',   type=int, default=17)
-    p.add_argument('--M',          type=int, default=100, help='frames per sequence')
-    p.add_argument('--hidden_dim', type=int, default=64)
-    p.add_argument('--batch_size', type=int, default=16)
-    p.add_argument('--lr',         type=float, default=1e-4)
-    p.add_argument('--epochs_ec',  type=int, default=30)
-    p.add_argument('--epochs_vc',  type=int, default=30)
-    p.add_argument('--epochs_reg', type=int, default=100)
+    p.add_argument('--train_npz',   default='data/uiprmd_quality_train.npz')
+    p.add_argument('--test_npz',    default='data/uiprmd_quality_test.npz')
+    p.add_argument('--n_joints',    type=int, default=17,
+                   help='Ignored for quality NPZ (ROM_J=12 is always used)')
+    p.add_argument('--M',           type=int, default=100, help='frames per sequence')
+    p.add_argument('--hidden_dim',  type=int, default=64)
+    p.add_argument('--batch_size',  type=int, default=16)
+    p.add_argument('--lr',          type=float, default=1e-4)
+    p.add_argument('--epochs_ec',   type=int, default=30)
+    p.add_argument('--epochs_vc',   type=int, default=30)
+    p.add_argument('--epochs_reg',  type=int, default=100)
     p.add_argument('--val_subject', type=int, default=7,
-                   help='Subject index held out for validation from train NPZ')
-    p.add_argument('--save_model', default='results/stgcn_seq_best.pt')
-    p.add_argument('--save_csv',   default='results/stgcn_seq_results.csv')
-    p.add_argument('--seed',       type=int, default=42)
+                   help='Subject index held out for validation (subject split only)')
+    p.add_argument('--split_mode',  choices=['subject', 'random'], default='subject',
+                   help='subject: hold out val_subject; random: 80/10/20 random split')
+    p.add_argument('--use_gmm_scores', action='store_true', default=False,
+                   help='Replace binary quality_labels with GMM log-likelihood scores')
+    p.add_argument('--save_model',  default='results/stgcn_seq_best.pt')
+    p.add_argument('--save_csv',    default='results/stgcn_seq_results.csv')
+    p.add_argument('--seed',        type=int, default=42)
     p.add_argument('--freeze_backbone_reg', action='store_true',
                    help='Freeze backbone during regression stage')
     return p.parse_args()
@@ -483,39 +605,110 @@ def main():
 
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
+    print(f"ROM joint count: {ROM_J} (--n_joints flag is ignored for quality NPZ)")
 
     os.makedirs(os.path.dirname(args.save_model) or '.', exist_ok=True)
-
-    # ── Joint selection ──────────────────────────────────────────────────
-    active_joints = ACTIVE_JOINTS[:args.n_joints]
-    J = len(active_joints)
-    print(f"Using {J} joints: {active_joints}")
 
     # ── Build datasets ───────────────────────────────────────────────────
     print("\nBuilding datasets …")
 
-    ds_train_ec = UIPromdSeqDataset(
-        args.train_npz, M=args.M, active_joints=active_joints,
-        augment=True,  val_subject=args.val_subject, is_val=False,
-        include_invalid=False, seed=args.seed)
+    if args.split_mode == 'random':
+        print("Split mode: RANDOM (combining train + test NPZ, shuffle seed=42)")
 
-    ds_val = UIPromdSeqDataset(
-        args.train_npz, M=args.M, active_joints=active_joints,
-        augment=False, val_subject=args.val_subject, is_val=True,
-        include_invalid=False, seed=args.seed)
+        d_tr = np.load(args.train_npz, allow_pickle=True)
+        d_te = np.load(args.test_npz,  allow_pickle=True)
 
-    ds_train_vc = UIPromdSeqDataset(
-        args.train_npz, M=args.M, active_joints=active_joints,
-        augment=True,  val_subject=args.val_subject, is_val=False,
-        include_invalid=True, seed=args.seed)
+        seqs_all   = np.concatenate([d_tr['sequences'],      d_te['sequences']],      axis=0)
+        lens_all   = np.concatenate([d_tr['lengths'],        d_te['lengths']])
+        ex_all     = np.concatenate([d_tr['exercise_ids'],   d_te['exercise_ids']])
+        qlabel_all = np.concatenate([d_tr['quality_labels'], d_te['quality_labels']])
 
-    ds_test = UIPromdSeqDataset(
-        args.test_npz, M=args.M, active_joints=active_joints,
-        augment=False, include_invalid=False, seed=args.seed)
+        if args.use_gmm_scores:
+            print("Computing GMM scores on combined data …")
+            rom_means   = seqs_all.mean(axis=1)  # (N, 12)
+            q_scores_all = _compute_gmm_from_arrays(
+                rom_means, ex_all, qlabel_all, print_table=True)
+        else:
+            q_scores_all = qlabel_all.astype(np.float32)
+
+        all_items = _build_items_from_arrays(
+            seqs_all, lens_all, ex_all, q_scores_all,
+            args.M, include_invalid=False)
+
+        # Shuffle with fixed seed=42, then split 80% train / 20% test
+        rng_split = np.random.default_rng(42)
+        shuffled  = list(all_items)
+        rng_split.shuffle(shuffled)
+
+        n_total = len(shuffled)
+        n_test  = int(0.2 * n_total)
+        n_train = n_total - n_test
+        n_val   = int(0.1 * n_train)
+
+        test_items  = shuffled[:n_test]
+        train_all   = shuffled[n_test:]
+        val_items   = train_all[:n_val]
+        train_items = train_all[n_val:]
+
+        # VC train: add synthetic invalid sequences from train items
+        train_vc_items = list(train_items)
+        for (seq, eid, qs, _) in train_items:
+            inv_raw  = _build_invalid_seq(seq.copy())
+            inv_proc = _resize_sequence(inv_raw, args.M)
+            train_vc_items.append((inv_proc, eid, qs, 1))
+
+        ds_train_ec = UIPromdSeqDataset(M=args.M, augment=True,
+                                         _prebuilt_items=train_items)
+        ds_val      = UIPromdSeqDataset(M=args.M, augment=False,
+                                         _prebuilt_items=val_items)
+        ds_train_vc = UIPromdSeqDataset(M=args.M, augment=True,
+                                         _prebuilt_items=train_vc_items)
+        ds_test     = UIPromdSeqDataset(M=args.M, augment=False,
+                                         _prebuilt_items=test_items)
+
+    else:  # subject split (original behaviour)
+        print(f"Split mode: SUBJECT (val_subject={args.val_subject})")
+        ext_tr = None
+        ext_te = None
+
+        if args.use_gmm_scores:
+            print("Computing GMM scores on train NPZ …")
+            ext_tr = compute_gmm_scores(args.train_npz)
+            print("Computing GMM scores on test NPZ (silent) …")
+            d_te_raw   = np.load(args.test_npz, allow_pickle=True)
+            rom_means_te = d_te_raw['sequences'].mean(axis=1)
+            ext_te = _compute_gmm_from_arrays(
+                rom_means_te,
+                d_te_raw['exercise_ids'],
+                d_te_raw['quality_labels'],
+                print_table=False)
+
+        ds_train_ec = UIPromdSeqDataset(
+            args.train_npz, M=args.M, augment=True,
+            val_subject=args.val_subject, is_val=False,
+            include_invalid=False, seed=args.seed,
+            ext_quality_scores=ext_tr)
+
+        ds_val = UIPromdSeqDataset(
+            args.train_npz, M=args.M, augment=False,
+            val_subject=args.val_subject, is_val=True,
+            include_invalid=False, seed=args.seed,
+            ext_quality_scores=ext_tr)
+
+        ds_train_vc = UIPromdSeqDataset(
+            args.train_npz, M=args.M, augment=True,
+            val_subject=args.val_subject, is_val=False,
+            include_invalid=True, seed=args.seed,
+            ext_quality_scores=ext_tr)
+
+        ds_test = UIPromdSeqDataset(
+            args.test_npz, M=args.M, augment=False,
+            include_invalid=False, seed=args.seed,
+            ext_quality_scores=ext_te)
 
     print(f"  Train (EC/QR): {len(ds_train_ec)} sequences")
     print(f"  Train (VC):    {len(ds_train_vc)} sequences  "
-          f"(≈{len(ds_train_vc)//2} valid + {len(ds_train_vc)//2} invalid)")
+          f"(~{len(ds_train_vc)//2} valid + ~{len(ds_train_vc)//2} invalid)")
     print(f"  Val:           {len(ds_val)} sequences")
     print(f"  Test:          {len(ds_test)} sequences")
 
@@ -526,14 +719,15 @@ def main():
     dl_test     = DataLoader(ds_test,     shuffle=False, **kw)
 
     # ── Model ────────────────────────────────────────────────────────────
-    model = STGCNSeq(J=J, hidden_dim=args.hidden_dim, M=args.M).to(device)
+    model = STGCNSeq(J=ROM_J, in_dim=1, hidden_dim=args.hidden_dim,
+                     M=args.M, edges=ROM_EDGES).to(device)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\nModel parameters: {total_params:,}")
-    print(f"  Backbone:         "
+    print(f"  Backbone:           "
           f"{sum(p.numel() for p in model.backbone.parameters()):,}")
-    print(f"  SpatialGCN:       "
+    print(f"  SpatialGCN:         "
           f"{sum(p.numel() for p in model.backbone.spatial_gcn.parameters()):,}")
-    print(f"  TemporalGCN:      "
+    print(f"  TemporalGCN:        "
           f"{sum(p.numel() for p in model.backbone.temporal_gcn.parameters()):,}")
     print(f"  ExerciseClassifier: "
           f"{sum(p.numel() for p in model.exercise_clf.parameters()):,}")
@@ -547,7 +741,7 @@ def main():
     print(f"Stage 1 — Exercise Classifier ({args.epochs_ec} epochs)")
     print(f"{'='*60}")
 
-    opt_ec = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt_ec      = torch.optim.Adam(model.parameters(), lr=args.lr)
     best_ec_acc = 0.0
     for epoch in range(args.epochs_ec):
         tr_loss, tr_acc = _run_epoch_ec(model, dl_train_ec, opt_ec, device, train=True)
@@ -566,7 +760,7 @@ def main():
     print(f"Stage 2 — Validity Classifier ({args.epochs_vc} epochs)")
     print(f"{'='*60}")
 
-    opt_vc = torch.optim.Adam(model.parameters(), lr=args.lr)
+    opt_vc      = torch.optim.Adam(model.parameters(), lr=args.lr)
     best_vc_acc = 0.0
     for epoch in range(args.epochs_vc):
         tr_loss, tr_acc = _run_epoch_vc(model, dl_train_vc, opt_vc, device, train=True)
@@ -595,7 +789,6 @@ def main():
         opt_reg = torch.optim.Adam(
             filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
     else:
-        # Lower LR for backbone, full LR for quality head
         opt_reg = torch.optim.Adam([
             {'params': model.backbone.parameters(),      'lr': args.lr * 0.1},
             {'params': model.exercise_clf.parameters(), 'lr': args.lr * 0.1},
@@ -618,19 +811,29 @@ def main():
                        args.save_model)
 
     print(f"  Best val MAD: {best_val_mad:.4f}")
-    print(f"  Model saved → {args.save_model}")
+    print(f"  Model saved -> {args.save_model}")
 
     # Reload best model for evaluation
     ckpt = torch.load(args.save_model, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
 
     # ── Final evaluation ──────────────────────────────────────────────────
-    # EC accuracy on test
     _, ec_acc_test = _run_epoch_ec(model, dl_test, None, device, train=False)
-    # VC accuracy on test (create a test dataset with invalid seqs)
-    ds_test_vc = UIPromdSeqDataset(
-        args.test_npz, M=args.M, active_joints=active_joints,
-        augment=False, include_invalid=True, seed=args.seed)
+
+    if args.split_mode == 'random':
+        test_vc_items = list(test_items)
+        for (seq, eid, qs, _) in test_items:
+            inv_raw  = _build_invalid_seq(seq.copy())
+            inv_proc = _resize_sequence(inv_raw, args.M)
+            test_vc_items.append((inv_proc, eid, qs, 1))
+        ds_test_vc = UIPromdSeqDataset(M=args.M, augment=False,
+                                        _prebuilt_items=test_vc_items)
+    else:
+        ds_test_vc = UIPromdSeqDataset(
+            args.test_npz, M=args.M, augment=False,
+            include_invalid=True, seed=args.seed,
+            ext_quality_scores=ext_te)
+
     dl_test_vc = DataLoader(ds_test_vc, shuffle=False, **kw)
     _, vc_acc_test = _run_epoch_vc(model, dl_test_vc, None, device, train=False)
 
@@ -648,16 +851,16 @@ def main():
 
     print("\n=== Quality Score Regression (UI-PRMD) ===")
     header = f"{'Exercise':<12} {'MAD':>7} {'RMSE':>7} {'MAPE':>8}  {'Paper MAD':>9}"
-    print("─" * len(header))
+    print("-" * len(header))
     print(header)
-    print("─" * len(header))
+    print("-" * len(header))
     for (e, mad, rmse, mape), paper_mad in zip(rows, PAPER_MAD):
         name = f"Ex{e+1:02d} ({EXERCISE_NAMES[e]})"
         print(f"{name:<12} {mad:7.3f} {rmse:7.3f} {mape:7.2f}%  {paper_mad:9.3f}")
-    print("─" * len(header))
+    print("-" * len(header))
     omad, ormse, omape = overall
     print(f"{'AVERAGE':<12} {omad:7.3f} {ormse:7.3f} {omape:7.2f}%  {'0.009':>9}")
-    print("─" * len(header))
+    print("-" * len(header))
 
     # ── Save CSV ──────────────────────────────────────────────────────────
     os.makedirs(os.path.dirname(args.save_csv) or '.', exist_ok=True)
@@ -667,7 +870,7 @@ def main():
             f.write(f"Ex{e+1:02d},{EXERCISE_NAMES[e]},{mad:.6f},{rmse:.6f},"
                     f"{mape:.4f},{paper_mad}\n")
         f.write(f"AVERAGE,ALL,{omad:.6f},{ormse:.6f},{omape:.4f},0.009\n")
-    print(f"\nResults saved → {args.save_csv}")
+    print(f"\nResults saved -> {args.save_csv}")
 
 
 if __name__ == '__main__':
