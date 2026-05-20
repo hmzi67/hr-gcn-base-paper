@@ -380,7 +380,8 @@ def load_vicon_file(pos_path: str):
 def preprocess(data_dir: str, output_dir: str,
                correct_only: bool = False,
                incorrect_only: bool = False,
-               split_filter: str = 'all'):
+               split_filter: str = 'all',
+               output_prefix: str = 'uiprmd'):
     """
     split_filter: 'all' | 'train_only' | 'test_only'
     correct_only:   load only from Movements/ (correct executions)
@@ -477,7 +478,8 @@ def preprocess(data_dir: str, output_dir: str,
         all_3d_norm = normalize_3d(all_3d)
         all_2d_norm = normalize_2d(all_2d)
 
-        out_path = os.path.join(output_dir, f'uiprmd_{split_name}{type_suffix}.npz')
+        all_ql = (all_qsc >= 0.5).astype(np.int32)
+        out_path = os.path.join(output_dir, f'{output_prefix}_{split_name}{type_suffix}.npz')
         np.savez_compressed(
             out_path,
             poses_2d       = all_2d_norm,
@@ -487,6 +489,7 @@ def preprocess(data_dir: str, output_dir: str,
             exercise_ids   = all_exc,
             frame_ids      = all_frm,
             quality_scores = all_qsc,
+            quality_labels = all_ql,
         )
         n_valid = int((all_qsc >= 0).sum())
         print(f'\nSaved {split_name}: {out_path}')
@@ -495,6 +498,7 @@ def preprocess(data_dir: str, output_dir: str,
         print(f'  rom_angles:    {all_rom.shape}')
         print(f'  subject_ids:   {all_sub.shape}  unique={np.unique(all_sub)}')
         print(f'  exercise_ids:  {all_exc.shape}  unique={np.unique(all_exc)}')
+        print(f'  quality_labels:{all_ql.shape}  correct={int(all_ql.sum())}/{len(all_ql)}')
         print(f'  quality_scores:{all_qsc.shape}  valid={n_valid}/{len(all_qsc)}  '
               f'mean(valid)={all_qsc[all_qsc >= 0].mean():.3f}' if n_valid else
               f'  quality_scores:{all_qsc.shape}  valid=0/{len(all_qsc)}')
@@ -517,6 +521,8 @@ def main():
     parser.add_argument('--split', default='all',
                         choices=['all', 'train_only', 'test_only'],
                         help='Which split(s) to write (default: all)')
+    parser.add_argument('--output_prefix', default='uiprmd',
+                        help='Prefix for output filenames, e.g. "uiprmd_mixed" → uiprmd_mixed_train.npz')
     args = parser.parse_args()
 
     if args.correct_only and args.incorrect_only:
@@ -525,7 +531,8 @@ def main():
     preprocess(args.data_dir, args.output_dir,
                correct_only=args.correct_only,
                incorrect_only=args.incorrect_only,
-               split_filter=args.split)
+               split_filter=args.split,
+               output_prefix=args.output_prefix)
     print('\nDone.')
 
 

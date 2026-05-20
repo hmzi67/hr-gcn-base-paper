@@ -63,10 +63,12 @@ def build_topology_adjacency(n_joints: int) -> torch.Tensor:
 # ── FIX 1 + FIX 5: Single GMM fit on train with PCA, apply to any split ──────
 
 def fit_gmm_models(poses_3d: np.ndarray,
+                   rom_angles: np.ndarray,
                    exercise_ids: np.ndarray,
                    quality_labels: np.ndarray) -> dict:
     """
     Fit one PCA+GMM per exercise using ONLY correct training frames.
+    Uses ROM angles (12-dim) as features instead of 3D joint positions.
     Returns dict: exercise_id -> (pca, gmm) or None if insufficient data.
     """
     models = {}
@@ -75,9 +77,8 @@ def fit_gmm_models(poses_3d: np.ndarray,
         if correct_mask.sum() < 5:
             models[e] = None
             continue
-        feats = (poses_3d[correct_mask][:, BODY_JOINT_IDX, :]
-                 .reshape(-1, J * 3).astype(np.float64))
-        n_comp = min(15, feats.shape[0] - 1, feats.shape[1])
+        feats = rom_angles[correct_mask].astype(np.float64)   # (N, 12)
+        n_comp = min(8, feats.shape[0] - 1, feats.shape[1])
         pca = PCA(n_components=n_comp, random_state=42)
         pca.fit(feats)
         feats_pca = pca.transform(feats)
@@ -88,24 +89,24 @@ def fit_gmm_models(poses_3d: np.ndarray,
     return models
 
 
-def apply_gmm_scores(poses_3d: np.ndarray,
+def apply_gmm_scores(rom_angles: np.ndarray,
                      exercise_ids: np.ndarray,
                      quality_labels: np.ndarray,
                      gmm_models: dict,
                      split_name: str = "") -> np.ndarray:
     """
     Score all frames using the already-fitted gmm_models (no refitting).
+    Uses ROM angles (12-dim) as features instead of 3D joint positions.
     Prints separation table for the given split.
     """
-    scores = np.zeros(len(poses_3d), dtype=np.float32)
+    scores = np.zeros(len(rom_angles), dtype=np.float32)
     rows = []
     for e in range(10):
         all_mask = exercise_ids == e
         if all_mask.sum() == 0 or gmm_models.get(e) is None:
             continue
         pca, gmm = gmm_models[e]
-        feats_all = (poses_3d[all_mask][:, BODY_JOINT_IDX, :]
-                     .reshape(-1, J * 3).astype(np.float64))
+        feats_all = rom_angles[all_mask].astype(np.float64)   # (N, 12)
         feats_pca = pca.transform(feats_all)
         ll = gmm.score_samples(feats_pca)
         ll_min, ll_max = ll.min(), ll.max()
@@ -171,7 +172,7 @@ def compute_rom_guided_init(poses_3d: np.ndarray,
         total_nan += nan_count
         corr = np.nan_to_num(corr, nan=0.0)
         rom_guided.append(corr)
-    print(f"ROM adjacency NaN count: {total_nan} → fixed to 0")
+    print(f"ROM adjacency NaN count: {total_nan} -> fixed to 0")
     return rom_guided
 
 
@@ -381,20 +382,27 @@ class SpatialGCN(nn.Module):
     def forward(self, x, exercise_id):
         B, M, J, C = x.shape
         x_flat = x.reshape(B * M, J, C)
-        ex = exercise_id[0].item()
-        A  = F.softmax(self.A_spatial[ex], dim=-1)
 
-        h = self.w1(x_flat)
-        h = torch.einsum('jk,bkd->bjd', A, h)
-        h = self.bn1(h)
-        h = F.relu(h)
+        h_list = []
+        for b in range(B):
+            ex_b = exercise_id[b].item()
+            A_b  = F.softmax(self.A_spatial[ex_b], dim=-1)
+            xb   = x_flat[b * M: (b + 1) * M]   # (M, J, C)
 
-        h = self.w2(h)
-        h = torch.einsum('jk,bkd->bjd', A, h)
-        h = self.bn2(h)
-        h = F.relu(h)
+            h = self.w1(xb)
+            h = torch.einsum('jk,mjd->mjd', A_b, h)
+            h = self.bn1(h)
+            h = F.relu(h)
 
-        return h.reshape(B, M, J, h.shape[-1])
+            h = self.w2(h)
+            h = torch.einsum('jk,mjd->mjd', A_b, h)
+            h = self.bn2(h)
+            h = F.relu(h)
+
+            h_list.append(h)
+
+        h_all = torch.stack(h_list, dim=0)   # (B, M, J, out_dim)
+        return h_all
 
 
 class TemporalGCN(nn.Module):
@@ -527,7 +535,7 @@ def train_one_epoch(model, loader, optimizer, device, lambda_ec, lambda_vc,
     total_ec_correct = total_vc_correct = total_samples = 0
     aug_batch_count = total_batches = 0
 
-    ce_ex = nn.CrossEntropyLoss(weight=class_weights_ex.to(device))
+    ce_ex = nn.CrossEntropyLoss(weight=class_weights_ex.to(device), label_smoothing=0.1)
     ce_vc = nn.CrossEntropyLoss()
     l1_q  = nn.L1Loss()
 
@@ -659,14 +667,14 @@ def print_results_table(test_metrics, save_csv, per_ex_csv):
     print(f"  Accuracy: {test_metrics['vc_acc']*100:.2f}%")
 
     print(f"\nQuality Score Regression:")
-    print(f"{'─'*77}")
-    print(f"{'Exercise':<12} {'MAD':>6} {'RMSE':>6} {'MAPE':>7}  {'Paper MAD':>9}  {'Δ':>6}")
-    print(f"{'─'*77}")
+    print(f"{'-'*77}")
+    print(f"{'Exercise':<12} {'MAD':>6} {'RMSE':>6} {'MAPE':>7}  {'Paper MAD':>9}  {'Delta':>7}")
+    print(f"{'-'*77}")
     for e, mad, rmse, mape in rows:
         paper = PAPER_MAD[e]
         print(f"Ex{e+1:02d} ({EXERCISE_NAMES[e]:<3})   {mad:.3f}  {rmse:.3f}  "
               f"{mape:.2f}%    {paper:.3f}     {mad-paper:+.3f}")
-    print(f"{'─'*77}")
+    print(f"{'-'*77}")
     avg_mad   = np.mean([r[1] for r in rows])
     avg_rmse  = np.mean([r[2] for r in rows])
     avg_mape  = np.mean([r[3] for r in rows])
@@ -674,7 +682,7 @@ def print_results_table(test_metrics, save_csv, per_ex_csv):
     avg_delta = avg_mad - avg_paper
     print(f"{'AVERAGE':<12} {avg_mad:.3f}  {avg_rmse:.3f}  "
           f"{avg_mape:.2f}%    {avg_paper:.3f}     {avg_delta:+.3f}")
-    print(f"{'─'*77}")
+    print(f"{'-'*77}")
 
     stgcn_mad   = 0.054
     improvement = (stgcn_mad - avg_mad) / stgcn_mad * 100
@@ -771,18 +779,27 @@ def main():
 
     # ── Load raw data ────────────────────────────────────────────────────────
     print("Loading data...")
-    tr = np.load(args.train_npz)
-    te = np.load(args.test_npz)
+    tr = np.load(args.train_npz, allow_pickle=True)
+    te = np.load(args.test_npz,  allow_pickle=True)
+
+    def _load_quality_labels(d, name):
+        if 'quality_labels' in d:
+            return d['quality_labels'].astype(np.int32)
+        elif 'quality_scores' in d:
+            print(f"  [{name}] 'quality_labels' not found - thresholding 'quality_scores' at 0.5")
+            return (d['quality_scores'] >= 0.5).astype(np.int32)
+        else:
+            raise KeyError(f"[{name}] NPZ has neither 'quality_labels' nor 'quality_scores'")
 
     tr_poses3d = tr['poses_3d']
     tr_rom     = tr['rom_angles']
-    tr_ql      = tr['quality_labels']
+    tr_ql      = _load_quality_labels(tr, 'train')
     tr_ex      = tr['exercise_ids']
     tr_subj    = tr['subject_ids']
 
     te_poses3d = te['poses_3d']
     te_rom     = te['rom_angles']
-    te_ql      = te['quality_labels']
+    te_ql      = _load_quality_labels(te, 'test')
     te_ex      = te['exercise_ids']
     te_subj    = te['subject_ids']
 
@@ -793,14 +810,15 @@ def main():
     # ── FIX 1+5: Fit GMMs on train data ONLY, apply same models everywhere ──
     print("Fitting PCA+GMM models on training frames (correct only)...")
     gmm_models = fit_gmm_models(tr_poses3d[train_mask],
+                                tr_rom[train_mask],
                                 tr_ex[train_mask],
                                 tr_ql[train_mask])
 
     print("Scoring train frames with fitted models...")
-    tr_gmm = apply_gmm_scores(tr_poses3d, tr_ex, tr_ql, gmm_models, split_name="TRAIN")
+    tr_gmm = apply_gmm_scores(tr_rom, tr_ex, tr_ql, gmm_models, split_name="TRAIN")
 
     print("Scoring test frames with SAME fitted models (no refit)...")
-    te_gmm = apply_gmm_scores(te_poses3d, te_ex, te_ql, gmm_models, split_name="TEST")
+    te_gmm = apply_gmm_scores(te_rom, te_ex, te_ql, gmm_models, split_name="TEST")
 
     # ── ROM-guided adjacency (train only) ────────────────────────────────────
     print("Computing ROM-guided adjacency init...")
@@ -916,15 +934,22 @@ def main():
     other_params = [p for p in model.parameters() if id(p) not in ec_param_ids]
     optimizer = torch.optim.AdamW([
         {'params': other_params, 'weight_decay': 1e-4},
-        {'params': ec_params,    'weight_decay': 1e-3, 'lr': args.lr},
+        {'params': ec_params,    'weight_decay': 1e-3, 'lr': args.lr * 0.3},
     ], lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10, min_lr=1e-6)
+    warmup_epochs = 10
+
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return epoch / max(warmup_epochs, 1)
+        progress = (epoch - warmup_epochs) / max(args.epochs - warmup_epochs, 1)
+        return 0.5 * (1 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     best_val_mad = float('inf')
     best_epoch   = 0
     patience_cnt = 0
-    early_stop   = 20
+    early_stop   = 40
     vc_flipped   = False
 
     print(f"\nTraining for {args.epochs} epochs...\n")
@@ -942,7 +967,7 @@ def main():
 
         # ── FIX 2: Auto-flip VC labels if accuracy is below chance ──────────
         if epoch == 1 and not vc_flipped and tr_m['vc_acc'] < 0.45:
-            print(f"  [FIX 2] Train VC acc={tr_m['vc_acc']:.0%} < 45% — inverting VC labels")
+            print(f"  [FIX 2] Train VC acc={tr_m['vc_acc']:.0%} < 45% - inverting VC labels")
             _flip_vc_labels(train_windows)
             _flip_vc_labels(val_windows)
             _flip_vc_labels(test_windows)
@@ -962,7 +987,7 @@ def main():
                                       shuffle=False, num_workers=4, pin_memory=True)
             vc_flipped = True
 
-        scheduler.step(val_m['mad'])
+        scheduler.step()
 
         if val_m['mad'] < best_val_mad:
             best_val_mad = val_m['mad']
@@ -985,7 +1010,8 @@ def main():
                 break
 
         if epoch % 10 == 0 or epoch <= 3:
-            print(f"Ep[{epoch:3d}] L={tr_m['loss']:.4f} | "
+            cur_lr = optimizer.param_groups[0]['lr']
+            print(f"Ep[{epoch:3d}] LR={cur_lr:.2e} | L={tr_m['loss']:.4f} | "
                   f"QA={tr_m['qual_loss']:.4f} EC={tr_m['ec_acc']:.0%} "
                   f"VC={tr_m['vc_acc']:.0%} | "
                   f"val_MAD={val_m['mad']:.4f} val_EC={val_m['ec_acc']:.0%} | "
