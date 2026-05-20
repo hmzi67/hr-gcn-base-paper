@@ -36,3 +36,6 @@ python stgcn_seq_quality.py \
     --save_csv   results/stgcn_seq_final_results_6.csv
 
     
+
+
+(venv) D:\Hmzi Thesis\hr-gcn-base-paper\hr-gcn-base-paper>python dual_stream_quality.py --train_npz data/uiprmd_official_gmm_train.npz --test_npz data/uiprmd_official_gmm_test.npz --epochs 300 --batch_size 16 --lr 1e-4 --hidden_dim 64 --M 100 --window_size 100 --stride 50 --lambda_ec 0.5 --lambda_vc 0.3 --save_model results/dual_official_best.pt --save_csv results/dual_official_results.csv --save_per_ex_csv results/dual_official_per_ex.csv --save_attention results/dual_official_attention.png
