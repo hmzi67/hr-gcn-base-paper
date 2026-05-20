@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -c \"import numpy as np; d=np.load\\('data/uiprmd_quality_train.npz'\\); print\\(list\\(d.keys\\(\\)\\)\\)\")"
+      "Bash(python -c \"import numpy as np; d=np.load\\('data/uiprmd_quality_train.npz'\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(python *)",
+      "Bash(pip install *)"
     ]
   }
 }

@@ -758,6 +758,12 @@ def parse_args():
     p.add_argument('--save_per_ex_csv', default='results/dual_stream_per_exercise.csv')
     p.add_argument('--save_attention',  default='results/dual_stream_attention.png')
     p.add_argument('--seed',            type=int,   default=42)
+    p.add_argument('--split_mode',
+                   choices=['subject', 'random'],
+                   default='subject',
+                   help='subject=subject-level split, random=0.8/0.2 random split')
+    p.add_argument('--use_npz_scores', action='store_true',
+                   help='Use quality_scores from NPZ directly, skip internal GMM computation')
     return p.parse_args()
 
 
@@ -803,22 +809,106 @@ def main():
     te_ex      = te['exercise_ids']
     te_subj    = te['subject_ids']
 
-    # Subject-level split: train 0-6, val 7
-    train_mask = tr_subj <= 6
-    val_mask   = tr_subj == 7
+    if args.split_mode == 'random':
+        # Combine train + test NPZ frames
+        all_poses3d = np.concatenate([tr_poses3d, te_poses3d], axis=0)
+        all_rom     = np.concatenate([tr_rom,     te_rom],     axis=0)
+        all_ql      = np.concatenate([tr_ql,      te_ql],      axis=0)
+        all_ex      = np.concatenate([tr_ex,      te_ex],      axis=0)
+        all_subj    = np.concatenate([tr_subj,    te_subj],    axis=0)
+        _tr_sc = tr['quality_scores'].astype(np.float32) if 'quality_scores' in tr else np.zeros(len(tr_poses3d), np.float32)
+        _te_sc = te['quality_scores'].astype(np.float32) if 'quality_scores' in te else np.zeros(len(te_poses3d), np.float32)
+        all_gmm = np.concatenate([_tr_sc, _te_sc], axis=0)
+
+        # Shuffle with seed
+        rng = np.random.default_rng(args.seed)
+        idx = rng.permutation(len(all_poses3d))
+        n_train = int(0.8 * len(idx))
+        n_val   = int(0.1 * len(idx))
+
+        train_idx = idx[:n_train]
+        val_idx   = idx[n_train:n_train+n_val]
+        test_idx  = idx[n_train+n_val:]
+
+        # Replace masks with index-based selection
+        tr_poses3d  = all_poses3d[train_idx]
+        tr_rom      = all_rom[train_idx]
+        tr_ql       = all_ql[train_idx]
+        tr_ex       = all_ex[train_idx]
+        tr_subj     = all_subj[train_idx]
+        tr_gmm      = all_gmm[train_idx]
+
+        val_poses3d = all_poses3d[val_idx]
+        val_rom     = all_rom[val_idx]
+        val_ql      = all_ql[val_idx]
+        val_ex      = all_ex[val_idx]
+        val_subj    = all_subj[val_idx]
+        val_gmm     = all_gmm[val_idx]
+
+        te_poses3d  = all_poses3d[test_idx]
+        te_rom      = all_rom[test_idx]
+        te_ql       = all_ql[test_idx]
+        te_ex       = all_ex[test_idx]
+        te_subj     = all_subj[test_idx]
+        te_gmm      = all_gmm[test_idx]
+
+        train_mask = np.ones(len(tr_poses3d), dtype=bool)
+        print(f'Random split: train={len(train_idx)} val={len(val_idx)} test={len(test_idx)}')
+    else:
+        # Existing subject-level split (keep as-is)
+        train_mask = tr_subj <= 6
+        val_mask   = tr_subj == 7
 
     # ── FIX 1+5: Fit GMMs on train data ONLY, apply same models everywhere ──
-    print("Fitting PCA+GMM models on training frames (correct only)...")
-    gmm_models = fit_gmm_models(tr_poses3d[train_mask],
-                                tr_rom[train_mask],
-                                tr_ex[train_mask],
-                                tr_ql[train_mask])
+    if args.use_npz_scores:
+        if args.split_mode != 'random':
+            # For random split, tr_gmm/val_gmm/te_gmm already set above
+            tr_gmm = tr['quality_scores'].astype(np.float32)
+            te_gmm = te['quality_scores'].astype(np.float32)
 
-    print("Scoring train frames with fitted models...")
-    tr_gmm = apply_gmm_scores(tr_rom, tr_ex, tr_ql, gmm_models, split_name="TRAIN")
+        print('Using quality_scores from NPZ directly')
+        print(f'Train: range [{tr_gmm.min():.3f}, {tr_gmm.max():.3f}]')
+        print(f'Test:  range [{te_gmm.min():.3f}, {te_gmm.max():.3f}]')
 
-    print("Scoring test frames with SAME fitted models (no refit)...")
-    te_gmm = apply_gmm_scores(te_rom, te_ex, te_ql, gmm_models, split_name="TEST")
+        print('\nNPZ quality_scores separation table:')
+        print(f"{'Exercise':>10}  {'Correct_mean':>12}  {'Incorrect_mean':>14}  {'Gap':>6}")
+        for ex in range(10):
+            ex_mask = tr_ex == ex
+            ql_ex   = tr_ql[ex_mask]
+            sc_ex   = tr_gmm[ex_mask]
+            cm = sc_ex[ql_ex == 1].mean() if (ql_ex == 1).sum() > 0 else 0
+            im = sc_ex[ql_ex == 0].mean() if (ql_ex == 0).sum() > 0 else 0
+            print(f'  Ex{ex+1:02d}       {cm:12.3f}  {im:14.3f}  {cm-im:6.3f}')
+
+        if args.split_mode == 'subject':
+            val_gmm = tr_gmm[val_mask]
+    else:
+        print("Fitting PCA+GMM models on training frames (correct only)...")
+        gmm_models = fit_gmm_models(tr_poses3d[train_mask],
+                                    tr_rom[train_mask],
+                                    tr_ex[train_mask],
+                                    tr_ql[train_mask])
+
+        print("Scoring train frames with fitted models...")
+        tr_gmm = apply_gmm_scores(tr_rom, tr_ex, tr_ql, gmm_models, split_name="TRAIN")
+
+        if args.split_mode == 'random':
+            print("Scoring val frames with fitted models...")
+            val_gmm = apply_gmm_scores(val_rom, val_ex, val_ql, gmm_models, split_name="VAL")
+
+        print("Scoring test frames with SAME fitted models (no refit)...")
+        te_gmm = apply_gmm_scores(te_rom, te_ex, te_ql, gmm_models, split_name="TEST")
+
+        if args.split_mode == 'subject':
+            val_gmm = tr_gmm[val_mask]
+
+    # For subject split, create unified val_* variables from masked train data
+    if args.split_mode == 'subject':
+        val_poses3d = tr_poses3d[val_mask]
+        val_rom     = tr_rom[val_mask]
+        val_ql      = tr_ql[val_mask]
+        val_ex      = tr_ex[val_mask]
+        val_subj    = tr_subj[val_mask]
 
     # ── ROM-guided adjacency (train only) ────────────────────────────────────
     print("Computing ROM-guided adjacency init...")
@@ -856,9 +946,9 @@ def main():
     )
     print("Building val windows...")
     val_windows = build_windows(
-        tr_poses3d[val_mask], tr_rom[val_mask],
-        tr_gmm[val_mask], tr_ql[val_mask],
-        tr_ex[val_mask], tr_subj[val_mask],
+        val_poses3d, val_rom,
+        val_gmm, val_ql,
+        val_ex, val_subj,
         args.window_size, args.stride, min_len=50,
         rom_mean=rom_mean, rom_std=rom_std,
         augment=False, generate_invalid=False,
