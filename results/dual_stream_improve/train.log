@@ -1,0 +1,130 @@
+genesys@genesys-MS-7B05:~/hamza/HR-GCN % source venv/bin/activate
+(venv) genesys@genesys-MS-7B05:~/hamza/HR-GCN % source venv/bin/activate && \
+python dual_stream_quality.py \
+  --train_npz data/uiprmd_segmented_gmm_train.npz \
+  --test_npz  data/uiprmd_segmented_gmm_test.npz \
+  --use_npz_scores \
+  --split_mode random \
+  --epochs 200 \
+  --batch_size 16 \
+  --lr 1e-4 \
+  --hidden_dim 64 \
+  --M 100 \
+  --window_size 100 \
+  --stride 50 \
+  --lambda_ec 0.5 \
+  --lambda_vc 0.3 \
+  --save_model results/dual_stream_improve/dual_segmented_best.pt \
+  --save_csv   results/dual_stream_improve/dual_segmented_results.csv \
+  --save_per_ex_csv results/dual_stream_improve/dual_segmented_per_ex.csv \
+  --save_attention results/dual_stream_improve/dual_segmented_attention.png
+Device: cuda:0
+Loading data...
+Random split: train=407501 val=50937 test=50939
+Using quality_scores from NPZ directly
+Train: range [0.000, 1.000]
+Test:  range [0.001, 0.999]
+
+NPZ quality_scores separation table:
+  Exercise  Correct_mean  Incorrect_mean     Gap
+  Ex01              0.947           0.911   0.035
+  Ex02              0.890           0.836   0.054
+  Ex03              0.949           0.792   0.157
+  Ex04              0.932           0.901   0.031
+  Ex05              0.974           0.900   0.074
+  Ex06              0.971           0.839   0.132
+  Ex07              0.989           0.908   0.081
+  Ex08              0.923           0.893   0.030
+  Ex09              0.951           0.858   0.093
+  Ex10              0.896           0.844   0.052
+Computing ROM-guided adjacency init...
+ROM adjacency NaN count: 0 -> fixed to 0
+Computing ROM normalization stats...
+Building train windows...
+  Speed augmentation: 3946/7855 windows (50%) | rotation: 7855/7855 (100%)
+Building val windows...
+Building test windows...
+  Train windows: 15710
+  Val   windows: 726
+  Test  windows: 716
+
+VC label distribution:
+  Train: valid=7855  invalid=7855  ratio=0.50
+  Val:   valid=726  invalid=0  ratio=1.00
+
+Model parameters:
+  SpatialGCN:      11,342
+  TemporalGCN:    305,424
+  ROMStream:      166,848
+  FusionLayer:     33,152
+  ExerciseHead:     8,906
+  ValidityHead:     8,386
+  QualityHead:      8,321
+  TOTAL:          542,379
+
+Training for 200 epochs...
+
+Epoch 1 augmentation: 982/982 batches (100%)                                                        
+Ep[  1] LR=1.00e-05 | L=1.8001 | QA=0.4031 EC=10% VC=50% | val_MAD=0.4074 val_EC=15% | 66.6s
+Ep[  2] LR=2.00e-05 | L=1.3809 | QA=0.1040 EC=25% VC=52% | val_MAD=0.0660 val_EC=56% | 54.1s        
+Ep[  3] LR=3.00e-05 | L=1.1317 | QA=0.0716 EC=63% VC=56% | val_MAD=0.0515 val_EC=88% | 58.7s        
+Ep[ 10] LR=1.00e-04 | L=0.4099 | QA=0.0367 EC=100% VC=90% | val_MAD=0.0276 val_EC=100% | 51.5s      
+Ep[ 20] LR=9.93e-05 | L=0.3395 | QA=0.0210 EC=100% VC=95% | val_MAD=0.0165 val_EC=96% | 51.8s       
+Ep[ 30] LR=9.73e-05 | L=0.3225 | QA=0.0182 EC=100% VC=97% | val_MAD=0.0148 val_EC=100% | 58.9s      
+Ep[ 40] LR=9.40e-05 | L=0.3089 | QA=0.0152 EC=100% VC=98% | val_MAD=0.0156 val_EC=99% | 58.8s       
+Ep[ 50] LR=8.95e-05 | L=0.3001 | QA=0.0142 EC=100% VC=99% | val_MAD=0.0143 val_EC=97% | 49.7s       
+Ep[ 60] LR=8.39e-05 | L=0.2960 | QA=0.0133 EC=100% VC=99% | val_MAD=0.0122 val_EC=98% | 45.8s       
+Ep[ 70] LR=7.73e-05 | L=0.2911 | QA=0.0111 EC=100% VC=99% | val_MAD=0.0104 val_EC=98% | 52.5s       
+Ep[ 80] LR=7.01e-05 | L=0.2864 | QA=0.0096 EC=100% VC=99% | val_MAD=0.0093 val_EC=98% | 51.0s       
+Ep[ 90] LR=6.23e-05 | L=0.2839 | QA=0.0089 EC=100% VC=100% | val_MAD=0.0086 val_EC=99% | 57.7s      
+Ep[100] LR=5.41e-05 | L=0.2828 | QA=0.0085 EC=100% VC=100% | val_MAD=0.0103 val_EC=94% | 47.4s      
+Ep[110] LR=4.59e-05 | L=0.2828 | QA=0.0083 EC=100% VC=100% | val_MAD=0.0090 val_EC=96% | 41.4s      
+Ep[120] LR=3.77e-05 | L=0.2804 | QA=0.0079 EC=100% VC=100% | val_MAD=0.0087 val_EC=99% | 58.7s      
+Ep[130] LR=2.99e-05 | L=0.2796 | QA=0.0079 EC=100% VC=100% | val_MAD=0.0084 val_EC=99% | 52.2s      
+Ep[140] LR=2.27e-05 | L=0.2794 | QA=0.0078 EC=100% VC=100% | val_MAD=0.0096 val_EC=95% | 50.7s      
+Ep[150] LR=1.61e-05 | L=0.2784 | QA=0.0077 EC=100% VC=100% | val_MAD=0.0105 val_EC=93% | 54.5s      
+Ep[160] LR=1.05e-05 | L=0.2780 | QA=0.0074 EC=100% VC=100% | val_MAD=0.0085 val_EC=95% | 54.1s      
+Ep[170] LR=6.03e-06 | L=0.2780 | QA=0.0073 EC=100% VC=100% | val_MAD=0.0090 val_EC=94% | 54.2s      
+Ep[180] LR=2.71e-06 | L=0.2780 | QA=0.0074 EC=100% VC=100% | val_MAD=0.0086 val_EC=96% | 56.0s      
+Ep[190] LR=6.82e-07 | L=0.2779 | QA=0.0073 EC=100% VC=100% | val_MAD=0.0086 val_EC=95% | 51.1s      
+Early stopping at epoch 194 (best val MAD=0.0073 at ep 154)                                         
+
+Loading best checkpoint (epoch 154, val MAD=0.0073)...
+/home/genesys/hamza/HR-GCN/dual_stream_quality.py:1112: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt = torch.load(args.save_model, map_location=device)
+
+=== Dual-Stream Results (UI-PRMD Test Set) ===
+
+Exercise Classification:
+  Top-1 Accuracy: 97.91%
+
+Validity Classifier:
+  Accuracy: 99.58%
+
+Quality Score Regression:
+-----------------------------------------------------------------------------
+Exercise        MAD   RMSE    MAPE  Paper MAD    Delta
+-----------------------------------------------------------------------------
+Ex01 (DS )   0.012  0.016  1.33%    0.006     +0.006
+Ex02 (HS )   0.008  0.011  0.93%    0.008     +0.000
+Ex03 (IL )   0.008  0.009  1.03%    0.009     -0.001
+Ex04 (SL )   0.009  0.015  1.02%    0.006     +0.003
+Ex05 (SS )   0.005  0.006  0.53%    0.003     +0.002
+Ex06 (SLR)   0.009  0.010  3.17%    0.004     +0.005
+Ex07 (SA )   0.005  0.010  0.69%    0.009     -0.004
+Ex08 (SE )   0.006  0.009  0.75%    0.013     -0.007
+Ex09 (SIR)   0.007  0.010  0.79%    0.006     +0.001
+Ex10 (SS2)   0.007  0.013  0.98%    0.028     -0.021
+-----------------------------------------------------------------------------
+AVERAGE      0.008  0.011  1.12%    0.009     -0.001
+-----------------------------------------------------------------------------
+
+  STGCN-Seq (yours): 0.054 MAD
+  Dual-Stream (ours): 0.008 MAD
+  Improvement: 85.7%
+
+  Per-exercise CSV: results/dual_stream_improve/dual_segmented_per_ex.csv
+  Summary CSV: results/dual_stream_improve/dual_segmented_results.csv
+  Attention plot: results/dual_stream_improve/dual_segmented_attention.png
+
+Done.

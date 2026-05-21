@@ -1,0 +1,10 @@
+metric,value
+qual_mae,0.009367
+qual_rmse,0.013136
+qual_r2,0.990189
+qual_pearson_r,0.996836
+qual_spearman_rho,0.984187
+ec_acc,0.988827
+vc_acc,0.995810
+vc_auc,nan
+qual_auc,0.874610
