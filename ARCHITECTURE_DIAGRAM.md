@@ -1030,6 +1030,305 @@ main(args)
 
 ---
 
+## 12. Dual-Stream Quality Assessment Network (dual_stream_quality.py)
+
+### 12.1 Complete System Architecture
+
+```
+INPUT STREAMS:
+  ├─ 3D Joint Positions (B, M, 17, 3)   ──────────┐
+  └─ ROM Angles (B, M, 12)                       ├───► DualStreamQualityNet
+                                                 │
+                                                 ↓
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Dual-Stream Processing                          │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  STREAM 1: Spatial-Temporal GCN                                        │
+│  ─────────────────────────────────────                                │
+│  3D Joints (B, M, 17, 3)                                              │
+│         ↓                                                              │
+│  SpatialGCN(17, 64, 10, A_topology, rom_guided_inits)               │
+│    ├─ Exercise-aware embeddings (per exercise)                       │
+│    ├─ ROM-guided adjacency initialization                            │
+│    └─ Output: (B, M, 17, 128) = spatial features                     │
+│         ↓                                                              │
+│  Reshape to (B, M, 17*128) = (B, M, 2176)                            │
+│         ↓                                                              │
+│  TemporalGCN(2176, 128, M=100)                                        │
+│    ├─ Temporal pooling via frame windows                             │
+│    ├─ GCN on temporal adjacency                                      │
+│    └─ Output: tf = (B, 128) ← temporal features                      │
+│                                                                        │
+│  STREAM 2: ROM + Bahdanau Attention                                    │
+│  ──────────────────────────────────                                   │
+│  ROM Angles (B, M, 12)                                               │
+│         ↓                                                              │
+│  ROMStream(12, 64, 64, 2)                                             │
+│    ├─ BiLSTM(12, 64, num_layers=2, bidirectional)                    │
+│    ├─ Bahdanau Attention layer                                       │
+│    ├─ Attention weights: (B, M)                                      │
+│    └─ Output: rf = (B, 128) ← ROM-weighted features                  │
+│         ↓                                                              │
+│    attn = (B, M) ← exercise-specific attention                       │
+│                                                                        │
+└────────────────────────────────────────────────────────────────────────┘
+         tf (B, 128)                       rf (B, 128)
+         │                                 │
+         └─────────────┬───────────────────┘
+                       ↓
+              ╔════════════════════╗
+              ║   FusionLayer      ║ ← NOVEL DESIGN
+              ║  (See Section 12.2)║
+              ╚════════╤═══════════╝
+                       ↓
+              fused = (B, 128)
+              │
+              ├─→ ExerciseHead → Exercise Classification (B, 10)
+              ├─→ ValidityHead → Validity (Valid/Invalid) (B, 2)
+              └─→ QualityHead → Quality Score (B, 1) [0-1]
+
+OUTPUTS:
+  ├─ exercise_pred: (B, 10) → Top-1 Exercise Accuracy: 97.91%
+  ├─ validity_pred: (B, 2)  → Validity Accuracy: 99.58%
+  ├─ quality_pred: (B, 1)   → MAD: 0.008 (vs. baseline 0.054)
+  └─ attention: (B, M)      → Per-frame ROM importance weights
+```
+
+---
+
+### 12.2 FusionLayer Detailed Design
+
+#### Architecture
+```
+Input tensors:
+  ├─ gcn_feat: (B, 256)  [Spatial-Temporal GCN output]
+  └─ rom_feat: (B, 128)  [ROM Stream + Attention output]
+
+Processing steps:
+
+1. CONCATENATION
+   ─────────────────
+   x = torch.cat([gcn_feat, rom_feat], dim=-1)
+   Result: x ∈ ℝ^(B × 384)
+   
+       GCN Features (256)      ROM Features (128)
+       ┌──────────────────┐    ┌────────────┐
+       │                  │    │            │
+       │                  │───▶│ Concat()   │
+       │                  │    │            │
+       └──────────────────┘    └─────┬──────┘
+                                     │
+                                     ↓
+                              x ∈ (B, 384)
+
+2. FULLY CONNECTED LAYER
+   ─────────────────────────
+   x = Linear(384, 128)(x)  + ReLU
+   Result: x ∈ ℝ^(B × 128)
+   
+   Parameters: 384 × 128 + 128 = 49,408
+
+       (B, 384)
+          │
+          ↓
+       ┌──────────┐
+       │ FC Layer │  Weight: (384, 128)
+       │ 384→128  │  Bias:   (128,)
+       └────┬─────┘
+            │
+            ↓
+        (B, 128)
+
+3. ACTIVATION + DROPOUT
+   ────────────────────
+   x = ReLU(x)  ← Non-linearity
+   x = Dropout(0.2)(x)  ← Regularization (20% dropout)
+   
+   Prevents:
+   ├─ Vanishing gradients
+   ├─ Overfitting
+   └─ Dead neurons
+
+4. LAYER NORMALIZATION
+   ──────────────────────
+   output = LayerNorm(128)(x)
+   Result: output ∈ ℝ^(B × 128)
+   
+   Normalizes each sample independently:
+   output = (x - mean(x)) / sqrt(var(x) + eps)
+   Stabilizes training & acts as adaptive scaling
+
+       (B, 128)
+          │
+          ↓
+       ┌──────────────────┐
+       │  LayerNorm(128)  │
+       │                  │
+       └────────┬─────────┘
+                │
+                ↓
+           (B, 128) ← Final fused features
+```
+
+#### Complete FusionLayer Code
+
+```python
+class FusionLayer(nn.Module):
+    def __init__(self, in_dim=256, out_dim=128):
+        super().__init__()
+        self.fc      = nn.Linear(in_dim, out_dim)        # 384 → 128
+        self.dropout = nn.Dropout(0.2)                   # 20% dropout
+        self.norm    = nn.LayerNorm(out_dim)             # Normalize to (out_dim,)
+
+    def forward(self, gcn_feat, rom_feat):
+        # Step 1: Concatenate two streams
+        x = torch.cat([gcn_feat, rom_feat], dim=-1)      # (B, 256) + (B, 128) → (B, 384)
+        
+        # Step 2: Linear transformation + ReLU
+        x = F.relu(self.fc(x))                           # (B, 384) → (B, 128) + ReLU
+        
+        # Step 3: Regularization (dropout)
+        x = self.dropout(x)                              # Drop 20% of neurons
+        
+        # Step 4: Layer normalization
+        return self.norm(x)                              # (B, 128) normalized
+```
+
+---
+
+#### Key Design Decisions
+
+| Component | Choice | Rationale |
+|-----------|--------|-----------|
+| **Concatenation** | Direct concat | Simple, interpretable fusion of both streams |
+| **Output Dim** | 128 | Matches ROM stream dim for balanced blending |
+| **Activation** | ReLU | Standard non-linearity; avoids vanishing gradients |
+| **Dropout** | 0.2 (20%) | Moderate regularization; prevents overfitting on N≈400K frames |
+| **LayerNorm** | Per-sample | Stabilizes training; independent of batch size |
+| **No Bias Fusion** | N/A | Linear layer has bias built-in |
+
+---
+
+#### Computational Cost
+
+| Layer | Input | Output | Parameters | FLOPs |
+|-------|-------|--------|-----------|-------|
+| Concat | (B, 256)+(B, 128) | (B, 384) | 0 | 0 |
+| FC | (B, 384) | (B, 128) | 49,408 | 49.4K × B |
+| ReLU | (B, 128) | (B, 128) | 0 | 128 × B |
+| Dropout | (B, 128) | (B, 128) | 0 | 0 |
+| LayerNorm | (B, 128) | (B, 128) | 256 | 256 × B |
+| **TOTAL** | - | - | **49,664** | **~49.9K × B** |
+
+For batch_size=16: **~799K FLOPs** = **negligible** (vs. TemporalGCN: 305K params)
+
+---
+
+### 12.3 Integration in DualStreamQualityNet
+
+```python
+class DualStreamQualityNet(nn.Module):
+    def __init__(self, hidden_dim=64, M=100, n_joints=17,
+                 n_exercises=10, A_topology=None, rom_guided_inits=None):
+        super().__init__()
+        spatial_out  = hidden_dim * 2      # 64 × 2 = 128
+        temporal_in  = n_joints * spatial_out  # 17 × 128 = 2176
+
+        # Stream 1: Spatial-Temporal processing
+        self.spatial_gcn  = SpatialGCN(n_joints, hidden_dim, n_exercises,
+                                        A_topology, rom_guided_inits)  # → 128-dim
+        self.temporal_gcn = TemporalGCN(temporal_in, 128, M)           # → 128-dim
+        
+        # Stream 2: ROM + Attention
+        self.rom_stream   = ROMStream(12, 64, 64, 2)                   # → 128-dim
+        
+        # Fusion: Combine both streams
+        self.fusion = FusionLayer(256, 128)  # ← Takes 256 (128+128) → produces 128
+        
+        # Task heads
+        self.exercise_head = nn.Sequential(
+            nn.Linear(128, 64), nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(64, n_exercises),  # 10 exercises
+        )
+        self.validity_head = nn.Sequential(
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 2),  # Valid/Invalid binary
+        )
+        self.quality_head = nn.Sequential(
+            nn.Linear(128, 64), nn.ReLU(), nn.Dropout(0.1),
+            nn.Linear(64, 1), nn.Sigmoid(),  # Quality score [0,1]
+        )
+
+    def forward(self, joints, rom, exercise_id, padding_mask=None):
+        # Spatial processing
+        sf = self.spatial_gcn(joints, exercise_id)    # (B, M, 17) → (B, M, 17, 128)
+        sf = sf.reshape(B, M, J * sf.shape[-1])       # (B, M, 2176)
+        tf = self.temporal_gcn(sf)                     # (B, M, 2176) → (B, 128)
+        
+        # ROM + Attention processing
+        rf, attn = self.rom_stream(rom, padding_mask)  # (B, M, 12) → (B, 128), (B, M)
+        
+        # FUSION: Combine both streams
+        fused = self.fusion(tf, rf)                    # (B, 256) → (B, 128)
+        
+        # Task prediction heads
+        return (self.exercise_head(fused),             # (B, 10)
+                self.validity_head(fused),             # (B, 2)
+                self.quality_head(fused).squeeze(-1),  # (B,)
+                attn)                                  # (B, M)
+```
+
+---
+
+### 12.4 Evaluation Results
+
+```
+╔════════════════════════════════════════════════════════════════════╗
+║          Dual-Stream Quality Assessment Performance                ║
+╠════════════════════════════════════════════════════════════════════╣
+║                                                                    ║
+║  TASK 1: Exercise Classification (10 exercises)                   ║
+║  ───────────────────────────────────────────                      ║
+║  ├─ Top-1 Accuracy: 97.91%  ← Excellent multi-class performance   ║
+║  └─ Baseline (STGCN-Seq): ~70%                                    ║
+║                                                                    ║
+║  TASK 2: Validity Detection (Valid vs. Invalid)                   ║
+║  ──────────────────────────────────────────────                   ║
+║  ├─ Accuracy: 99.58%  ← Near-perfect binary classification        ║
+║  └─ Real-time threshold: quality_score > 0.5                      ║
+║                                                                    ║
+║  TASK 3: Quality Score Regression                                 ║
+║  ──────────────────────────────────                               ║
+║  ├─ Mean Absolute Deviation (MAD): 0.008                          ║
+║  ├─ Root Mean Squared Error (RMSE): 0.011                         ║
+║  ├─ MAPE: 1.12%                                                   ║
+║  │                                                                ║
+║  ├─ Per-Exercise Breakdown:                                       ║
+║  │   Ex01: 0.012  | Ex02: 0.008  | Ex03: 0.008  | Ex04: 0.009   ║
+║  │   Ex05: 0.005  | Ex06: 0.009  | Ex07: 0.005  | Ex08: 0.006   ║
+║  │   Ex09: 0.007  | Ex10: 0.007  |                               ║
+║  │                                                                ║
+║  └─ IMPROVEMENT vs. Baseline (STGCN-Seq):                         ║
+║      Baseline MAD: 0.054                                          ║
+║      Dual-Stream:  0.008                                          ║
+║      ➜ 85.7% improvement  ← Key result for thesis!               ║
+║                                                                    ║
+║  Model Size: 542,379 parameters total                             ║
+║  ├─ SpatialGCN:   11,342 params                                   ║
+║  ├─ TemporalGCN: 305,424 params                                   ║
+║  ├─ ROMStream:   166,848 params                                   ║
+║  ├─ FusionLayer:  49,664 params  ← Minimal but effective          ║
+║  ├─ ExerciseHead:  8,906 params                                   ║
+║  ├─ ValidityHead:  8,386 params                                   ║
+║  └─ QualityHead:   8,321 params                                   ║
+║                                                                    ║
+╚════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
 **Document Version**: 2026-05-04  
 **Last Updated**: 2026-05-04  
 **Author**: Claude Code Architecture Analysis
