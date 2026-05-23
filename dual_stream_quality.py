@@ -758,6 +758,7 @@ def parse_args():
     p.add_argument('--save_per_ex_csv', default='results/dual_stream_per_exercise.csv')
     p.add_argument('--save_attention',  default='results/dual_stream_attention.png')
     p.add_argument('--seed',            type=int,   default=42)
+    p.add_argument('--n_exercises',     type=int,   default=10)
     p.add_argument('--split_mode',
                    choices=['subject', 'random'],
                    default='subject',
@@ -915,6 +916,7 @@ def main():
     rom_guided_inits = compute_rom_guided_init(
         tr_poses3d[train_mask], tr_rom[train_mask],
         tr_ex[train_mask], tr_ql[train_mask],
+        n_exercises=args.n_exercises,
     )
 
     # ── Skeleton topology adjacency ──────────────────────────────────────────
@@ -992,15 +994,15 @@ def main():
 
     # ── Class weights for exercise head ─────────────────────────────────────
     ex_arr      = np.array([w['exercise'] for w in train_windows])
-    ex_counts   = np.bincount(ex_arr, minlength=10).astype(np.float32)
+    ex_counts   = np.bincount(ex_arr, minlength=args.n_exercises).astype(np.float32)
     ex_counts   = np.where(ex_counts == 0, 1, ex_counts)
-    cls_w_ex    = torch.tensor(1.0 / ex_counts)
-    cls_w_ex    = cls_w_ex / cls_w_ex.sum() * 10
+    cls_w_ex    = torch.tensor(1.0 / ex_counts[:args.n_exercises])
+    cls_w_ex    = cls_w_ex / cls_w_ex.sum() * args.n_exercises
 
     # ── Model ────────────────────────────────────────────────────────────────
     model = DualStreamQualityNet(
         hidden_dim=args.hidden_dim, M=args.M,
-        n_joints=J, n_exercises=10,
+        n_joints=J, n_exercises=args.n_exercises,
         A_topology=A_topology,
         rom_guided_inits=rom_guided_inits,
     ).to(device)
