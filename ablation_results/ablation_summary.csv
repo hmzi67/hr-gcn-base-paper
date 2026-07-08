@@ -1,0 +1,6 @@
+config,name,mad,rmse,mape,ec_acc,vc_acc,delta_vs_full
+no_attn,w/o Bahdanau attention,0.0069,0.0097,0.9066,99.02,99.72,-0.0015
+no_romguide,w/o ROM-guided adj.,0.0074,0.0109,1.0865,98.74,99.58,-0.0010
+uni_lstm,Unidirectional LSTM,0.0078,0.0108,1.0005,98.32,99.86,-0.0006
+full,Full Dual-Stream,0.0084,0.0122,1.1290,96.51,99.58,+0.0000
+no_romstream,w/o ROM stream (GCN only),0.0350,0.0920,12.4132,96.65,12.29,+0.0266

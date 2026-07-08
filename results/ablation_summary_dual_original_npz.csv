@@ -1,0 +1,6 @@
+variant,mad,ec_acc,vc_acc
+baseline,0.473026,0.2906,0.9590
+no_rom_stream,0.489662,0.0862,1.0000
+no_rom_guided_adj,0.473026,0.2906,0.9590
+no_attention,0.472761,0.2959,0.9590
+zero_spatial_weights,0.476834,0.3417,0.0000

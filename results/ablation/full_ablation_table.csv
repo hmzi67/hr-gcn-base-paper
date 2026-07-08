@@ -1,0 +1,6 @@
+config,rom_guided_init,attention,bidirectional,multi_task,test_mad,test_rmse,test_mape,ec_acc,vc_acc,delta_mad_vs_full
+Full,True,True,True,True,0.0083,0.0114,1.1842,96.51,99.58,+0.0000
+No ROM-guided init,False,True,True,True,0.0077,0.0107,1.1934,98.74,99.58,-0.0006
+No attention,True,False,True,True,0.0071,0.0097,0.9636,99.02,99.72,-0.0012
+Single-task,True,True,True,False,0.0048,0.0058,0.6837,13.13,96.23,-0.0035
+Unidirectional LSTM,True,True,False,True,0.0080,0.0108,1.0537,98.32,99.86,-0.0003
